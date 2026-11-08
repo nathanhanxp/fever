@@ -6,6 +6,7 @@ export interface SceneEdge extends GraphEdge {
   visual?: "keep" | "removed" | "added"
   weight: number
   member_ids: string[]
+  proved_count: number
 }
 
 export interface Scene {
@@ -42,6 +43,15 @@ function separate(items: { x: number; z: number }[], minDist = 5) {
       }
     }
   }
+}
+
+export function placeNodes(nodes: GraphNode[], layout: "layered" | "similarity" | "topdown"): GraphNode[] {
+  return nodes.map((n) => {
+    const p = n.pos?.[layout]
+    if (p && p.length === 3) return { ...n, x: p[0], y: p[1], z: p[2] }
+    if (layout === "topdown") return { ...n, y: 0 }
+    return n
+  })
 }
 
 export function dominantType(edges: GraphEdge[]): string {
@@ -87,22 +97,7 @@ export function buildScene(opts: {
     }
     return { cap, members, x: x / members.length, y: y / members.length, z: z / members.length }
   })
-  const mx = centroids.reduce((s, c) => s + c.x, 0) / Math.max(1, centroids.length)
-  const mz = centroids.reduce((s, c) => s + c.z, 0) / Math.max(1, centroids.length)
-  const ring = [...centroids].sort((a, b) => Math.atan2(a.z - mz, a.x - mx) - Math.atan2(b.z - mz, b.x - mx) || a.cap.localeCompare(b.cap))
-  const cols = Math.ceil(Math.sqrt(ring.length))
-  const rows = Math.ceil(ring.length / cols)
-  ring.forEach((c, i) => {
-    const col = i % cols
-    const row = Math.floor(i / cols)
-    c.x = (col - (cols - 1) / 2) * 6.2
-    c.y = ((rows - 1) / 2 - row) * 4.2
-    c.z = 0
-    if (opts.layout === "topdown") {
-      c.z = -c.y
-      c.y = 0
-    }
-  })
+  separate(centroids, 6)
   const titleOf = (members: GraphNode[]) => {
     const counts = new Map<string, number>()
     for (const m of members) counts.set(m.cluster || "group", (counts.get(m.cluster || "group") || 0) + 1)
@@ -137,6 +132,7 @@ export function buildScene(opts: {
       status: c.members.every((m) => opts.migrated.has(m.id)) ? "modern" : "legacy",
       entry: c.members.some((m) => m.entry),
       external: false,
+      muted: !!opts.expanded && opts.expanded !== c.cap,
       x: c.x, y: c.y, z: c.z,
       qualityCount: q,
       blast: c.members.reduce((s, m) => s + (m.degree || 0), 0),
@@ -147,12 +143,34 @@ export function buildScene(opts: {
 
   const expandedMembers = opts.expanded ? (byCap.get(opts.expanded) || []) : []
   const memberPos = new Map<string, [number, number, number]>()
-  expandedMembers.forEach((m, i) => {
+  if (opts.expanded && expandedMembers.length) {
     const base = centroids.find((c) => c.cap === opts.expanded)!
-    const ang = i * 2.399
-    const rad = 0.85 * Math.sqrt(i + 0.4)
-    memberPos.set(m.id, [base.x + rad * Math.cos(ang), base.y + (i % 5) * 0.15, base.z + rad * Math.sin(ang)])
-  })
+    const spread = 2.2 + Math.sqrt(expandedMembers.length) * 0.85
+    for (const c of centroids) {
+      if (c.cap === opts.expanded) continue
+      const dx = c.x - base.x
+      const dy = c.y - base.y
+      const dz = c.z - base.z
+      const dist = Math.hypot(dx, dy, dz) || 0.001
+      if (dist >= spread + 3) continue
+      const push = spread + 3 - dist
+      c.x += (dx / dist) * push
+      c.y += (dy / dist) * push
+      c.z += (dz / dist) * push
+    }
+    expandedMembers.forEach((m, i) => {
+      const ang = i * 2.399
+      const rad = spread * 0.22 * Math.sqrt(i + 0.6)
+      memberPos.set(m.id, [base.x + rad * Math.cos(ang), base.y + (i % 3) * 0.35, base.z + rad * Math.sin(ang)])
+    })
+    for (const node of clusterNodes) {
+      const c = centroids.find((x) => node.id === `cap:${x.cap}`)
+      if (!c) continue
+      node.x = c.x
+      node.y = c.y
+      node.z = c.z
+    }
+  }
   const unitNodes = expandedMembers.map((m) => {
     const p = memberPos.get(m.id)!
     return { ...m, x: p[0], y: p[1], z: p[2] }
@@ -167,7 +185,7 @@ export function buildScene(opts: {
     return `cap:${cap}`
   }
 
-  type Acc = { type: string; source: string; target: string; ids: string[]; proved: boolean; visual: "keep" | "removed" | "added"; file: string; line: number; snippet: string; mechanism: string }
+  type Acc = { type: string; source: string; target: string; ids: string[]; proved_count: number; visual: "keep" | "removed" | "added"; file: string; line: number; snippet: string; mechanism: string }
   const groups = new Map<string, Acc>()
   let hiddenEdges = 0
   for (const e of opts.edges) {
@@ -182,10 +200,10 @@ export function buildScene(opts: {
     const cur = groups.get(key)
     if (cur) {
       cur.ids.push(e.id)
-      cur.proved = cur.proved && e.proved
+      if (e.proved) cur.proved_count += 1
     } else {
       groups.set(key, {
-        type: e.type, source: s, target: t, ids: [e.id], proved: e.proved,
+        type: e.type, source: s, target: t, ids: [e.id], proved_count: e.proved ? 1 : 0,
         visual: e.visual || "keep", file: e.file, line: e.line, snippet: e.snippet, mechanism: e.mechanism,
       })
     }
@@ -205,8 +223,9 @@ export function buildScene(opts: {
     line: g.line,
     snippet: g.snippet,
     mechanism: g.mechanism,
-    proved: g.proved,
-    dynamic: !g.proved,
+    proved: g.ids.length > 0 && g.proved_count / g.ids.length >= 0.5,
+    proved_count: g.proved_count,
+    dynamic: g.proved_count === 0,
     visual: g.visual,
     weight: g.ids.length,
     member_ids: g.ids,

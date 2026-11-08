@@ -25,6 +25,7 @@ export interface GraphNode {
   blast?: number
   provedRatio?: number
   ledger?: number | null
+  muted?: boolean
 }
 
 export interface GraphEdge {
@@ -38,6 +39,8 @@ export interface GraphEdge {
   mechanism: string
   proved: boolean
   dynamic: boolean
+  proved_count?: number
+  weight?: number
   predicted?: boolean
   agent?: string
 }
@@ -131,7 +134,7 @@ export interface RunModel {
   plan_versions: Array<{ version: number; reason: string; steps: string[] }>
   validator: { legal_order_violations: Array<{ step_id: string; message: string }>; invalid_demo_violations: Array<{ step_id: string; message: string }>; invalid_order: string[] }
   clusters: Array<{ id: string; label: string; size: number; hubs: string[]; summary: string }>
-  agents: Array<{ id: string; role: string; status: string; started: number; seconds: number; tokens: number; model: string; host: string; note: string }>
+  agents: Array<{ id: string; role: string; status: string; started: number; seconds: number; tokens: number; model: string; host: string; note: string; group?: string; output?: string; input_ref?: string }>
   benchmark: { rows: Array<Record<string, unknown>>; note: string }
   model_benchmark?: { rows: Array<Record<string, unknown>> }
   stats: Record<string, number>
