@@ -24,5 +24,5 @@ export default async function Home() {
     redirect(`/${repos[0].id}`)
   }
 
-  redirect("/setup")
+  redirect("/new")
 }

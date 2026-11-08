@@ -8,11 +8,18 @@ venv/
 node_modules/
 dist/
 .DS_Store
-frontend/dist/
-backend/.cache/
-backend/.workspaces/
+modswarm/frontend/.next/
+modswarm/frontend/dist/
+modswarm/frontend/tsconfig.tsbuildinfo
+modswarm/backend/.cache/
+modswarm/backend/.workspaces/
 modswarm/backend/data/
+!modswarm/backend/data/plan_fixtures/
+!modswarm/backend/data/plan_fixtures/**
 modswarm/backend/*.db
 modswarm/backend/.venv/
 *.log
+# removed legacy trees (app lives in modswarm/)
 35368827-main/
+/backend/
+/frontend/

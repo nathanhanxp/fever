@@ -9,6 +9,7 @@ interface NodeDetailCardProps {
   inDegree: number
   outDegree: number
   onClose: () => void
+  onAuditEdge?: () => void
 }
 
 const kindLabel: Record<string, string> = {
@@ -24,7 +25,7 @@ const runtimeLabel: Record<string, string> = {
   shared: "shared",
 }
 
-export function NodeDetailCard({ node, clusterColor, inDegree, outDegree, onClose }: NodeDetailCardProps) {
+export function NodeDetailCard({ node, clusterColor, inDegree, outDegree, onClose, onAuditEdge }: NodeDetailCardProps) {
   return (
     <div className="absolute bottom-4 left-4 z-20 w-[380px] rounded-lg border border-border bg-background/90 backdrop-blur-md shadow-lg animate-in fade-in slide-in-from-bottom-2 duration-300">
       <div className="flex items-start gap-2 p-3 pb-2">
@@ -59,7 +60,7 @@ export function NodeDetailCard({ node, clusterColor, inDegree, outDegree, onClos
         </div>
       )}
 
-      <div className="flex items-center gap-3 px-3 pb-3 text-[10px] text-muted-foreground">
+      <div className="flex items-center gap-3 px-3 pb-3 text-[10px] text-muted-foreground flex-wrap">
         {node.cluster_label && (
           <span className="flex items-center gap-1">
             <span
@@ -73,6 +74,15 @@ export function NodeDetailCard({ node, clusterColor, inDegree, outDegree, onClos
         <span>{outDegree} out</span>
         {node.hub_score > 0.1 && (
           <span>hub {(node.hub_score * 100).toFixed(0)}%</span>
+        )}
+        {onAuditEdge && (
+          <button
+            type="button"
+            className="ml-auto underline-offset-2 hover:underline text-foreground/80 cursor-pointer"
+            onClick={onAuditEdge}
+          >
+            Audit dependency
+          </button>
         )}
       </div>
     </div>

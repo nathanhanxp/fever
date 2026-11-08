@@ -43,9 +43,17 @@ export function ChatMessage({
               if (block.type === "text") {
                 return (
                   <div key={i} className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-headings:my-2 prose-ul:my-1 prose-li:my-0 break-words whitespace-normal">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm]}
+                      components={{
+                        // Never mount raw <script> from model output (Next/React client ban)
+                        script: () => null,
+                        iframe: () => null,
+                      }}
+                    >
                       {block.text}
                     </ReactMarkdown>
+
                   </div>
                 )
               }

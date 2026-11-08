@@ -11,3 +11,4 @@ numpy
 umap-learn
 scikit-learn
 hdbscan
+reportlab>=4.0

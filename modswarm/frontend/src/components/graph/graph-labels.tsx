@@ -27,12 +27,13 @@ function StaticLabel({ node, textColor, isDark }: { node: CodeUnitNode; textColo
       sprite
       transform
       occlude={false}
-      zIndexRange={[100, 0]}
+      zIndexRange={[30, 0]}
       style={{
         pointerEvents: "none",
         userSelect: "none",
         opacity,
         transition: "opacity 0.5s ease-in-out",
+        zIndex: 30,
       }}
     >
       <div style={{
@@ -89,12 +90,13 @@ function ClusterLabel({ label, position, color, isDark }: { label: string; posit
       sprite
       transform
       occlude={false}
-      zIndexRange={[110, 0]}
+      zIndexRange={[30, 0]}
       style={{
         pointerEvents: "none",
         userSelect: "none",
         opacity,
         transition: "opacity 0.5s ease-in-out",
+        zIndex: 30,
       }}
     >
       <div style={{

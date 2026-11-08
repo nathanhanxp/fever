@@ -1,0 +1,17 @@
+target/
+*.class
+cobertura.ser
+tmp/
+work/
+.idea
+out
+*.iml
+.settings/
+webapp/upload/
+src/main/resources/jforumConfig/jforum-custom.properties
+*.DS_Store
+.classpath
+.project
+.gradle
+build
+bin/

@@ -13,6 +13,7 @@ from app.core.config import OPENAI_API_KEY
 from app.core.database import get_session
 from app.models import CodeUnit, FeatureCluster, ClusterMember, GraphEdge, ProjectGraphSnapshot, Repo
 from app.services.search import get_latest_snapshot, vector_search, graph_traverse
+from app.services.agents import explorer as graph_tools
 
 logger = logging.getLogger("graphdev.chat")
 
@@ -28,6 +29,10 @@ class ChatRequest(BaseModel):
     message: str
     history: list[ChatHistoryItem] = []
     snapshot_id: str | None = None
+    # Live graph screenshot + palette so Ask uses Nemotron Omni VLM
+    image: str | None = None
+    clusters: list[dict] | None = None
+    step_id: str | None = None
 
 
 TOOLS = [
@@ -59,10 +64,44 @@ TOOLS = [
             "required": ["seed_ids", "mode"],
         },
     },
+    {
+        "type": "function",
+        "name": "dependencies",
+        "description": "Programs and files a named symbol depends on, with hop distance and file:line.",
+        "parameters": {"type": "object", "properties": {"focus": {"type": "string"}}, "required": ["focus"]},
+    },
+    {
+        "type": "function",
+        "name": "dependents",
+        "description": "What depends on a named symbol, with hop distance and file:line.",
+        "parameters": {"type": "object", "properties": {"focus": {"type": "string"}}, "required": ["focus"]},
+    },
+    {
+        "type": "function",
+        "name": "path",
+        "description": "Shortest dependency path between two names.",
+        "parameters": {"type": "object", "properties": {"source": {"type": "string"}, "target": {"type": "string"}}, "required": ["source", "target"]},
+    },
+    {
+        "type": "function",
+        "name": "filter_by_lens",
+        "description": "Edges whose type matches a lens or legacy edge type.",
+        "parameters": {"type": "object", "properties": {"lens": {"type": "string"}}, "required": ["lens"]},
+    },
 ]
 
 
-def _build_system_prompt(repo: Repo, snapshot: ProjectGraphSnapshot, session: Session) -> str:
+def _migration_run(repo_id: str):
+    try:
+        from app.api.routes.swarm_api import _run_for
+        return _run_for(repo_id)
+    except Exception:
+        return None
+
+
+def _build_system_prompt(repo: Repo, snapshot: ProjectGraphSnapshot, session: Session, run: dict | None = None) -> str:
+    from app.services.migration.chat_context import migration_digest
+
     unit_count = session.exec(
         select(func.count()).where(CodeUnit.snapshot_id == snapshot.id)
     ).one()
@@ -80,38 +119,37 @@ def _build_system_prompt(repo: Repo, snapshot: ProjectGraphSnapshot, session: Se
         ).one()
         cluster_labels.append(f"{c.label} ({count} units)")
 
-    return f"""You are a codebase exploration assistant for the **{repo.name}** repository.
+    return f"""You are a modernization + codebase assistant for **{repo.name}**.
 
-You have access to a semantic code graph: {unit_count} code units, {edge_count} dependency edges.
+You are connected to the measured dependency graph and migration agent network — not a screenshot captioner.
+
+Graph: {unit_count} units, {edge_count} edges.
 Subsystems: {', '.join(cluster_labels) if cluster_labels else 'none detected'}.
-Edge types: calls (function invocations), renders (JSX component usage), http_calls (fetch to API routes).
+Edge types include COPY, CALL, LINK, XCTL, FILE, JOB, TRANS, SCREEN (and Java CALL/LINK/TRANS equivalents).
+
+## Active migration plan
+{migration_digest(run)}
+
+## How to answer
+- Prefer MEASURED GRAPH SCOPE / tool results / migration packets over any image description.
+- For "API related" / region questions: list the real clusters and concrete controllers/services/transactions — never collapse to a single node just because a cluster is literally named "api".
+- Name symbols the repo actually has. Cite edge types and file paths when useful.
+- On migration questions: side effects → what breaks / vulns → cite sources with markdown links.
 
 ## Tools
-- **vector_search(queries, top_k)**: find code units by semantic meaning. Pass 1-3 queries in one call (batched). Use this first.
-  IMPORTANT: Queries are matched against LLM-generated descriptions that use business/domain language (e.g. "workspace task assignment notification delivery"), NOT code symbols or file paths. Write queries accordingly.
-- **graph_traverse(seed_ids, mode, direction)**: build subgraphs from search results.
-  - mode="connect": find how nodes relate (paths between them)
-  - mode="expand" + direction="incoming": find what depends on a node
-  - mode="expand" + direction="outgoing": find what a node uses
+- **vector_search(queries, top_k)**: find units by business meaning / name.
+- **graph_traverse(seed_ids, mode, direction)**: subgraphs from search results.
+- **filter_by_lens(lens)**, **dependencies**, **dependents**, **path**: precise graph ops.
 
 ## Response style
-- Explain the LOGIC, not the files. Say "the comment form submits to the API, which persists and notifies the assignee" — NOT "src/app/api/workspaces/[id]/projects/[projectId]/tasks/[taskId]/comments/route.ts::POST calls src/features/comments/mutations.ts::createComment".
-- Use symbol names (TaskBoard, createTask, notifyTaskAssigned) but NEVER full file paths in prose.
-- Be concise. 2-4 short paragraphs max. No numbered lists unless truly needed.
-- Lead with the high-level answer, then add flow blocks for the details.
-
-## Flow blocks
-Include :::flow blocks to highlight paths in the graph. Use the **integer index** (e.g. #0, #3) from tool results to reference nodes. NEVER copy UUIDs.
-
-:::flow
-{{"id":"unique-id","label":"Flow Name","description":"Short description","node_ids":["#0","#2","#5"],"edge_keys":[{{"source":"#0","target":"#2","edge_type":"calls"}}]}}
-:::
+- Lead with the answer in 2–5 short paragraphs. Concrete names > vague color talk.
+- Include :::flow blocks when paths help. Use #N indices from tools, never raw UUIDs.
+- Do NOT dump CSS hues or "I see a blue glow" unless the user asked about a color.
 
 ## Rules
-- Use exactly 1 vector_search call (with up to 3 queries) and optionally 1 graph_traverse call. No more.
-- If a follow-up can be answered from prior tool results, do NOT search again.
-- Max 3 flow blocks per response. Each flow max 5 nodes.
-- ONLY use #N index references in node_ids and edge_keys. NEVER paste raw UUIDs.
+- If MEASURED GRAPH SCOPE is present, answer from it first; tools optional to deepen.
+- Else 1 vector_search (≤3 queries) + optional 1 graph_traverse.
+- Max 3 flow blocks, ≤5 nodes each.
 - Do NOT include :::actions blocks."""
 
 
@@ -133,13 +171,23 @@ async def chat_stream(
     if not snapshot:
         raise HTTPException(400, "No snapshots found")
 
-    system_prompt = _build_system_prompt(repo, snapshot, session)
+    run = _migration_run(repo_id)
+    system_prompt = _build_system_prompt(repo, snapshot, session, run)
     client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+
+    from app.services.migration.chat_context import detect_step_index, format_step_for_prompt, step_packet
+
+    user_content = body.message
+    step_idx = detect_step_index(body.message)
+    if run and step_idx:
+        packet = step_packet(run, step_idx)
+        if packet:
+            user_content = f"{body.message}\n\n{format_step_for_prompt(packet)}"
 
     messages: list[dict] = []
     for h in body.history:
         messages.append({"role": h.role, "content": h.content})
-    messages.append({"role": "user", "content": body.message})
+    messages.append({"role": "user", "content": user_content})
 
     node_registry: dict[str, dict] = {}  # index_key "#N" -> {id, qualname}
 
@@ -179,6 +227,114 @@ async def chat_stream(
         nonlocal messages
         tool_counter = 0
         previous_response_id = None
+
+        if step_idx and run:
+            yield _sse("tool_start", {"id": "mig", "name": "migration_step", "args": {"queries": [f"step {step_idx}"]}})
+            yield _sse("tool_done", {"id": "mig", "count": 1, "summary": [
+                {"name": f"step {step_idx}", "kind": "migration", "sim": 1.0}
+            ]})
+
+        color_q = False
+        try:
+            from app.services.agents.scope import is_color_question, scope_facts, scope_question
+
+            color_q = is_color_question(body.message)
+            yield _sse("tool_start", {"id": "scope", "name": "graph_scope", "args": {"queries": [body.message[:80]]}})
+            scope = await scope_question(
+                session,
+                snapshot.id,
+                body.message,
+                clusters=body.clusters,
+            )
+            kind = (
+                scope.get("cluster_label")
+                or (scope.get("cluster_labels") or [None])[0]
+                or scope.get("hue_name")
+                or scope.get("lens")
+                or "match"
+            )
+            yield _sse("tool_done", {"id": "scope", "count": scope["count"], "summary": [
+                {"name": n, "kind": str(kind), "sim": 1.0} for n in scope.get("top", [])
+            ]})
+            if scope["count"]:
+                yield _sse("graph_focus", scope)
+                facts = scope_facts(session, snapshot.id, scope)
+                base = messages[-1]["content"] if messages else body.message
+                if "[Migration step" not in base and facts:
+                    base = f"{base}\n\n{facts}"
+                    messages = messages[:-1] + [{"role": "user", "content": base}]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"graph scope failed: {exc}")
+
+        # Vision only for color questions — structural Ask uses the agent tool loop + measured scope
+        image = (body.image or "").strip()
+        if image and color_q:
+            if not image.startswith("data:"):
+                image = f"data:image/png;base64,{image}"
+            if len(image) > 1_800_000:
+                yield _sse("error", {"message": "Graph screenshot too large — zoom out and retry"})
+                yield _sse("done", {})
+                return
+            from app.services.agents.gateway import complete_vision
+            from app.services.migration.chat_context import migration_digest
+
+            clusters = body.clusters or []
+            palette_lines = []
+            for c in clusters[:24]:
+                label = str(c.get("label") or "?")
+                hue_name = str(c.get("hue_name") or c.get("color_name") or "colored")
+                css = str(c.get("color") or "")
+                count = c.get("count")
+                palette_lines.append(f"- {hue_name} cluster → label “{label}” ({count} units) css={css}")
+
+            legend = (
+                "Live 3D dependency graph. Answer the color/region question using the palette + MEASURED scope.\n"
+                "Do not invent architecture from glow alone — prefer named units in the scope notes.\n"
+                "pink/magenta ≈ hue 300–340 (never call these green). green ≈ hue 90–150.\n"
+            )
+            prompt = f"{legend}\n"
+            if palette_lines:
+                prompt += "GROUND-TRUTH cluster palette:\n" + "\n".join(palette_lines) + "\n\n"
+            digest = migration_digest(run) if run else ""
+            if digest:
+                prompt += f"Migration context:\n{digest[:800]}\n\n"
+            scoped = ""
+            if messages and isinstance(messages[-1].get("content"), str):
+                scoped = messages[-1]["content"]
+            prompt += (
+                f"Operator question: {body.message[:500]}\n"
+                "Name the matching cluster label and what those units do in THIS repo. "
+                "List several concrete symbols from the measured scope. Avoid CSS dumps.\n"
+            )
+            if scoped and scoped != body.message:
+                prompt += f"\n{scoped[:2000]}\n"
+
+            yield _sse("tool_start", {
+                "id": "vision",
+                "name": "graph_vision",
+                "args": {"clusters": len(clusters), "queries": [body.message[:80]]},
+            })
+            result = await complete_vision(prompt, image, backend="nvidia", max_tokens=900)
+            text = (result.get("text") or "").strip()
+            if result.get("status") != "ok" or not text:
+                err = result.get("error") or result.get("status") or "vision failed"
+                yield _sse("tool_done", {"id": "vision", "count": 0, "summary": [{"name": "vision", "kind": "error", "sim": 0}]})
+                # Fall through to tool agent instead of hard-failing
+                logger.warning(f"vision failed, falling back to tools: {err}")
+            else:
+                yield _sse("tool_done", {
+                    "id": "vision",
+                    "count": len(clusters) or 1,
+                    "summary": [
+                        {"name": c.get("hue_name") or c.get("label") or "cluster", "kind": str(c.get("label") or ""), "sim": 1.0}
+                        for c in clusters[:6]
+                    ] or [{"name": result.get("model") or "omni", "kind": "vlm", "sim": 1.0}],
+                })
+                chunk = 48
+                for i in range(0, len(text), chunk):
+                    yield _sse("text_delta", {"delta": text[i : i + chunk]})
+                yield _sse("done", {})
+                return
 
         while True:
             create_kwargs: dict = {
@@ -260,6 +416,23 @@ async def chat_stream(
                             yield _sse("tool_done", {"id": tid, "count": len(result), "summary": summary})
                             tool_output = json.dumps(indexed_result, default=str)
 
+                        elif tool_name in {"dependencies", "dependents", "path", "filter_by_lens", "findings_for", "impact"}:
+                            fn = {
+                                "dependencies": graph_tools.dependencies,
+                                "dependents": graph_tools.dependents,
+                                "path": graph_tools.path,
+                                "filter_by_lens": graph_tools.filter_by_lens,
+                                "findings_for": graph_tools.findings_for,
+                                "impact": graph_tools.dependents,
+                            }[tool_name]
+                            if tool_name == "path":
+                                result = fn(session, snapshot.id, args.get("source", ""), args.get("target", ""))
+                            elif tool_name == "filter_by_lens":
+                                result = fn(session, snapshot.id, args.get("lens", ""))
+                            else:
+                                result = fn(session, snapshot.id, args.get("focus", ""))
+                            yield _sse("tool_done", {"id": tid, "count": result.get("count", 0)})
+                            tool_output = json.dumps(result, default=str)
                         elif tool_name == "graph_traverse":
                             seed_ids = args.get("seed_ids", [])
                             resolved_seeds = [

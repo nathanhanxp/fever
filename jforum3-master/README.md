@@ -1,0 +1,7 @@
+JForum
+============
+
+***Disclaimer: I am not actively working on the code anymore, as I moved to another projects and priorities over the years. I keep it here for historical reasons and because it may be useful to someone. This v3 was intented to be a next gen of v2, a total rewrite with new features and approaches. However, interest on the project dismissed over time, and I saw no reason to keep working on it.***
+
+## Please check [http://jforum.net](jforum.net) for the currently maintained version
+

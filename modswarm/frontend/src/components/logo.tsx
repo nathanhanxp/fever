@@ -24,7 +24,7 @@ export function Logo({ className, width = 120, height = 120 }: LogoProps) {
   return (
     <Image
       src="/logo.png"
-      alt="GraphDev"
+      alt="Fever"
       width={width}
       height={height}
       className={className}

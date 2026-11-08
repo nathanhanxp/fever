@@ -15,6 +15,7 @@ from app.api.routes.repos import router as repos_router
 from app.api.routes.search import router as search_router
 from app.api.routes.upload import router as upload_router
 from app.api.routes.migrate import router as migrate_router
+from app.api.routes.swarm_api import router as swarm_router
 from fastapi.responses import FileResponse
 from pathlib import Path
 from app.core.database import init_db
@@ -42,6 +43,7 @@ app.include_router(chat_router)
 app.include_router(admin_router)
 app.include_router(upload_router)
 app.include_router(migrate_router)
+app.include_router(swarm_router)
 
 _STATIC = Path(__file__).resolve().parent / "static" / "index.html"
 
@@ -63,3 +65,6 @@ async def log_requests(request: Request, call_next):
 @app.on_event("startup")
 def on_startup():
     init_db()
+    from app.services.migration.sources import warm_async
+
+    warm_async()

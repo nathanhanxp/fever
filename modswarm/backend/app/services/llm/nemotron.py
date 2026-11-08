@@ -140,7 +140,10 @@ class AsyncNemotron:
     def __init__(self, api_key: str | None = None, base_url: str | None = None, model: str | None = None):
         self.api_key = api_key if api_key is not None else (NVIDIA_API_KEY or os.environ.get("NVIDIA_API_KEY", ""))
         self.base = base_url or NVIDIA_BASE_URL or os.environ.get("NVIDIA_BASE_URL") or "https://integrate.api.nvidia.com/v1"
-        self.model = model or NVIDIA_MODEL or "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"
+        chosen = model or NVIDIA_MODEL or ""
+        if not chosen or chosen == "nvidia/nemotron-3-nano-30b-a3b":
+            chosen = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"
+        self.model = chosen
         self.responses = _Responses(self)
         self.embeddings = _Embeddings(self)
 
@@ -151,7 +154,13 @@ class AsyncNemotron:
     async def chat(self, model: str, messages: list, tools: list | None = None, json_mode: bool = False) -> dict:
         if not self.api_key:
             return {"text": "", "tool_calls": [], "prompt_tokens": None, "completion_tokens": None, "error": "not configured"}
-        body: dict = {"model": model or self.model, "messages": messages, "temperature": 0, "max_tokens": 800}
+        body: dict = {
+            "model": model or self.model,
+            "messages": messages,
+            "temperature": 0,
+            "max_tokens": 1200,
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
         if tools:
             body["tools"] = tools
             body["tool_choice"] = "auto"
@@ -165,9 +174,25 @@ class AsyncNemotron:
         choice = (payload.get("choices") or [{}])[0]
         message = choice.get("message") or {}
         usage = payload.get("usage") or {}
+        text = message.get("content") or message.get("reasoning_content") or ""
+        tool_calls = message.get("tool_calls") or []
+        if not text and not tool_calls and tools:
+            retry = dict(body)
+            retry.pop("tools", None)
+            retry.pop("tool_choice", None)
+            retry["max_tokens"] = 800
+            async with httpx.AsyncClient(timeout=120) as client:
+                response = await client.post(url, headers=self.headers, json=retry)
+                response.raise_for_status()
+                payload = response.json()
+            choice = (payload.get("choices") or [{}])[0]
+            message = choice.get("message") or {}
+            usage = payload.get("usage") or usage
+            text = message.get("content") or message.get("reasoning_content") or ""
+            tool_calls = message.get("tool_calls") or []
         return {
-            "text": message.get("content") or "",
-            "tool_calls": message.get("tool_calls") or [],
+            "text": text,
+            "tool_calls": tool_calls,
             "prompt_tokens": usage.get("prompt_tokens"),
             "completion_tokens": usage.get("completion_tokens"),
         }

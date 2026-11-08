@@ -34,6 +34,41 @@ def get_latest_snapshot(repo_id: str, snapshot_id: str | None, session: Session)
     ).first()
 
 
+def _keyword_search(snapshot: ProjectGraphSnapshot, queries: list[str], top_k: int, session: Session) -> list[dict]:
+    """Measured name/path match when embeddings are not on disk."""
+    units = session.exec(select(CodeUnit).where(CodeUnit.snapshot_id == snapshot.id)).all()
+    needles = [q.lower() for q in queries if q.strip()]
+    if not needles:
+        return []
+    scored: list[tuple[float, CodeUnit]] = []
+    for unit in units:
+        blob = " ".join([
+            unit.symbol_name or "",
+            unit.qualname or "",
+            unit.file_path or "",
+            unit.llm_description or "",
+            unit.source_text or "",
+            unit.kind or "",
+        ]).lower()
+        hits = sum(1 for n in needles if n in blob or any(tok and tok in blob for tok in n.replace("/", " ").split()))
+        if hits:
+            scored.append((float(hits), unit))
+    scored.sort(key=lambda row: (-row[0], row[1].symbol_name))
+    out = []
+    for score, unit in scored[:top_k]:
+        out.append({
+            "id": unit.id,
+            "qualname": unit.qualname,
+            "symbol_name": unit.symbol_name,
+            "kind": unit.kind,
+            "file_path": unit.file_path,
+            "start_line": unit.start_line,
+            "similarity": score,
+            "llm_description": unit.llm_description,
+        })
+    return out
+
+
 async def vector_search(
     repo_id: str,
     snapshot: ProjectGraphSnapshot,
@@ -44,7 +79,7 @@ async def vector_search(
     vectors_path = DATA_DIR / f"vectors_{repo_id}.npy"
     index_path = DATA_DIR / f"vectors_{repo_id}_index.json"
     if not vectors_path.exists() or not index_path.exists():
-        return []
+        return _keyword_search(snapshot, queries, top_k, session)
 
     matrix = np.load(str(vectors_path))
     with open(index_path) as f:

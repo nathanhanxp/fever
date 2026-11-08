@@ -126,7 +126,7 @@ class Builder:
         self.tree = parse_tree(root)
         self.files: dict[str, list[str]] = {}
         for path in root.rglob("*"):
-            if path.suffix.lower() in {".cbl", ".cpy", ".jcl", ".bms", ".md", ".java"} and path.is_file():
+            if path.suffix.lower() in {".cbl", ".cob", ".cobol", ".cl2", ".cpy", ".copy", ".jcl", ".bms", ".csd", ".md", ".java", ".txt", ".prc", ".proc", ".ctl", ".inc"} and path.is_file():
                 rel = str(path.relative_to(root))
                 try:
                     self.files[rel] = read_text(path).splitlines()
@@ -211,54 +211,229 @@ class Builder:
         self.findings.append(f)
         return f
 
+    def _java_cluster(self, package: str, roles: list[str], path: str) -> str:
+        if "controller" in roles or "/controllers/" in path.replace("\\", "/"):
+            return "controllers"
+        if "repository" in roles or "/repository/" in path.replace("\\", "/"):
+            return "repository"
+        if "service" in roles or "/services/" in path.replace("\\", "/"):
+            return "services"
+        if "entity" in roles or "/entities/" in path.replace("\\", "/"):
+            return "entities"
+        if "/security/" in path.replace("\\", "/"):
+            return "security"
+        if "/sso/" in path.replace("\\", "/"):
+            return "sso"
+        if package:
+            parts = package.split(".")
+            # net.jforum.core.support.hibernate → hibernate / core
+            if len(parts) >= 3 and parts[0] == "net" and parts[1] == "jforum":
+                return parts[2] if parts[2] not in {"core"} else (parts[3] if len(parts) > 3 else "core")
+            return parts[-1]
+        return "java"
+
+    def _resolve_java_target(
+        self,
+        name: str,
+        by_fqcn: dict[str, dict],
+        by_simple: dict[str, list[dict]],
+    ) -> dict | None:
+        if name in by_fqcn:
+            return by_fqcn[name]
+        simple = name.rsplit(".", 1)[-1]
+        cands = by_simple.get(simple) or []
+        if len(cands) == 1:
+            return cands[0]
+        if name.endswith("." + simple):
+            for c in cands:
+                if c["fqcn"] == name or c["fqcn"].endswith("." + simple):
+                    return c
+        return None
+
     def _build_java(self) -> None:
+        """Deterministic graph for Java (jforum3 / VRaptor / Spring / JPA)."""
         files = self.tree["java"]
         by_simple: dict[str, list[dict]] = defaultdict(list)
         by_fqcn: dict[str, dict] = {}
+        owner_of: dict[str, str] = {}  # class simple → fqcn primary
+
         for src in files:
             for cls in src["classes"]:
                 fqcn = f"{src['package']}.{cls['name']}" if src["package"] else cls["name"]
-                row = {**cls, "fqcn": fqcn, "path": src["path"], "package": src["package"]}
+                roles = list(cls.get("roles") or [])
+                cluster = self._java_cluster(src["package"], roles, src["path"])
+                kind = "screen" if "controller" in roles else "program"
+                subtype = "java-" + (roles[0] if roles else (cls.get("kind") or "class"))
+
+                summary = f"Java {cls.get('kind') or 'type'} {fqcn}"
+                if roles:
+                    summary = f"Java {', '.join(roles)} {fqcn}"
+                row = {**cls, "fqcn": fqcn, "path": src["path"], "package": src["package"], "cluster": cluster}
                 by_simple[cls["name"]].append(row)
                 by_fqcn[fqcn] = row
-                self.node(
-                    f"java:{fqcn}", name=cls["name"], kind="program", subtype="java",
-                    file=src["path"], line=cls["line"],
-                    summary=f"Java type {fqcn}",
-                    cluster=src["package"].split(".")[-1] if src["package"] else "java",
+                owner_of[cls["name"]] = fqcn
+                entry = "controller" in roles or any(
+                    a in (cls.get("annotations") or []) for a in ("Resource", "Path", "Controller", "RestController")
                 )
+                self.node(
+                    f"java:{fqcn}",
+                    name=cls["name"],
+                    kind=kind,
+                    subtype=subtype,
+                    file=src["path"],
+                    line=cls["line"],
+                    summary=summary,
+                    cluster=cluster,
+                    entry=entry,
+                )
+                # Persistence surface
+                if "entity" in roles or any(a in (cls.get("annotations") or []) for a in ("Entity", "Table")):
+                    tid = f"dsn:jpa:{cls['name']}"
+                    self.node(
+                        tid,
+                        name=f"table:{cls['name']}",
+                        kind="dataset",
+                        subtype="jpa",
+                        file=src["path"],
+                        line=cls["line"],
+                        summary=f"JPA entity {fqcn} → relational table (Measured annotation)",
+                        cluster="entities",
+                    )
+                    self.edge(
+                        f"java:{fqcn}", tid, "FILE", src["path"], cls["line"], cls.get("snippet") or "",
+                        "@Entity / JPA persistence mapping", proved=True, agent="data-lens",
+                    )
+
+        def owner_id(src: dict, owner_name: str | None) -> str | None:
+            if owner_name and owner_name in owner_of:
+                return f"java:{owner_of[owner_name]}"
+            if src["classes"]:
+                c0 = src["classes"][0]["name"]
+                fq = f"{src['package']}.{c0}" if src["package"] else c0
+                return f"java:{fq}"
+            return None
+
+        def link_or_ext(source_id: str, type_name: str, etype: str, path: str, line: int, snip: str, mechanism: str, agent: str = "mapper"):
+            if not source_id or source_id not in self.nodes:
+                return
+            target = self._resolve_java_target(type_name, by_fqcn, by_simple)
+            if target is None:
+                # Skip noisy JDK / framework imports as nodes unless security-relevant
+                simple = type_name.rsplit(".", 1)[-1]
+                root_pkg = type_name.split(".")[0] if "." in type_name else ""
+                if root_pkg in {"java", "javax", "jakarta", "org", "com", "br"} and type_name not in by_fqcn:
+                    if not any(k in type_name for k in ("Security", "Password", "Auth", "Session", "HttpServlet")):
+                        return
+                self.node(
+                    f"ext:{type_name}",
+                    name=simple,
+                    kind="program",
+                    subtype="external",
+                    summary=f"Type {type_name} is not defined in this tree",
+                    cluster="external",
+                    external=True,
+                )
+                self.edge(
+                    source_id, f"ext:{type_name}", etype, path, line, snip,
+                    mechanism + " (external)", proved=False, agent=agent,
+                )
+                return
+            tid = f"java:{target['fqcn']}"
+            if tid == source_id or tid not in self.nodes:
+                return
+            self.edge(source_id, tid, etype, path, line, snip, mechanism, proved=True, agent=agent)
+
         for src in files:
+            # Imports → CALL
             for imp in src["imports"]:
                 if imp["star"]:
                     continue
-                target = by_fqcn.get(imp["name"])
-                simple = imp["name"].rsplit(".", 1)[-1]
-                if target is None and len(by_simple.get(simple, [])) == 1 and imp["name"].endswith(simple):
-                    only = by_simple[simple][0]
-                    if imp["name"] == only["fqcn"] or imp["name"].endswith("." + simple):
-                        target = only
-                owner = src["classes"][0]["name"] if src["classes"] else src["path"]
-                owner_fqcn = f"{src['package']}.{owner}" if src["package"] and src["classes"] else owner
-                source_id = f"java:{owner_fqcn}" if src["classes"] else ""
-                if not source_id or source_id not in self.nodes:
-                    continue
-                if target is None:
-                    self.node(
-                        f"ext:{imp['name']}", name=simple, kind="program", subtype="external",
-                        summary=f"Imported type {imp['name']} is not defined in this tree",
-                        cluster="external", external=True,
-                    )
-                    self.edge(
-                        source_id, f"ext:{imp['name']}", "CALL", src["path"], imp["line"], imp["snippet"],
-                        "Java import of a type outside this tree", proved=False, agent="mapper",
-                    )
-                    continue
-                if f"java:{target['fqcn']}" == source_id:
-                    continue
-                self.edge(
-                    source_id, f"java:{target['fqcn']}", "CALL", src["path"], imp["line"], imp["snippet"],
-                    "Java import resolved to a type in this tree", proved=True, agent="mapper",
+                # Prefer first public type in file as owner of imports
+                sid = owner_id(src, src["classes"][0]["name"] if src["classes"] else None)
+                link_or_ext(
+                    sid or "",
+                    imp["name"],
+                    "CALL",
+                    src["path"],
+                    imp["line"],
+                    imp["snippet"],
+                    "Java import resolved in-tree" if imp["name"] in by_fqcn else "Java import",
+                    agent="code-lens",
                 )
+            # Extends / implements → COPY (shared type contract)
+            for row in src.get("extends") or []:
+                sid = owner_id(src, row.get("owner"))
+                link_or_ext(sid or "", row["name"], "COPY", src["path"], row["line"], row["snippet"],
+                            "Java extends", agent="code-lens")
+            for row in src.get("implements") or []:
+                sid = owner_id(src, row.get("owner"))
+                link_or_ext(sid or "", row["name"], "COPY", src["path"], row["line"], row["snippet"],
+                            "Java implements", agent="code-lens")
+            # Constructor / field injection → LINK
+            for row in src.get("injections") or []:
+                sid = owner_id(src, row.get("owner"))
+                link_or_ext(
+                    sid or "",
+                    row["type"],
+                    "LINK",
+                    src["path"],
+                    row["line"],
+                    row["snippet"],
+                    f"Java {row.get('via') or 'field'} injection of {row.get('simple')}",
+                    agent="code-lens",
+                )
+            # forwardTo(X.class) → XCTL
+            for row in src.get("forwards") or []:
+                sid = owner_id(src, row.get("owner"))
+                link_or_ext(
+                    sid or "",
+                    row["name"],
+                    "XCTL",
+                    src["path"],
+                    row["line"],
+                    row["snippet"],
+                    "VRaptor/Spring result.forwardTo(Type.class)",
+                    agent="code-lens",
+                )
+            # Security annotations → Measured findings
+            for ann in src.get("annotations") or []:
+                if ann["name"] in {"SecurityConstraint", "PreAuthorize", "Secured", "RolesAllowed"}:
+                    sid = owner_id(src, src["classes"][0]["name"] if src["classes"] else None)
+                    self.finding(
+                        lens="platform-security",
+                        type="authz-gate",
+                        rule="authz-annotation",
+                        title=f"@{ann['name']} gate on {src['classes'][0]['name'] if src['classes'] else src['path']}",
+                        file=src["path"],
+                        line=ann["line"],
+                        snippet=ann["snippet"],
+                        authority="Annotation present in source (Measured). Modernization must preserve the equivalent check.",
+                        agent="platform-security-lens",
+                        claim="Measured",
+                        severity="high",
+                        node_id=sid or "",
+                        confidence=0.9,
+                    )
+                if ann["name"] in {"Resource", "Path"} and src["classes"]:
+                    sid = owner_id(src, src["classes"][0]["name"])
+                    if sid and sid in self.nodes:
+                        self.nodes[sid]["entry"] = True
+                        txn = f"txn:{src['classes'][0]['name']}"
+                        self.node(
+                            txn,
+                            name=src["classes"][0]["name"] + "#http",
+                            kind="transaction",
+                            subtype="vraptor",
+                            file=src["path"],
+                            line=ann["line"],
+                            summary=f"@{ann['name']} HTTP entry for {src['classes'][0]['name']}",
+                            cluster="controllers",
+                            entry=True,
+                        )
+                        self.edge(
+                            txn, sid, "TRANS", src["path"], ann["line"], ann["snippet"],
+                            f"@{ann['name']} routes to controller", proved=True, agent="code-lens",
+                        )
 
     def build_graph(self) -> None:
         if self.tree.get("java") and not self.tree["programs"] and not self.tree["jobs"] and not self.tree["maps"]:
@@ -862,7 +1037,254 @@ class Builder:
              "citations": [{"file": "README.md", "line": 38, "title": README_STYLE}]},
         ]
 
+    def _plan_java(self) -> dict:
+        """Modernization waves for Java trees (jforum3 VRaptor/Spring/JPA → Quarkus)."""
+        base_edges = [e for e in self.edges if not e.get("predicted")]
+        steps: list[dict] = []
+
+        def add_step(**kw):
+            sid = f"s{len(steps)+1}"
+            step = {
+                "id": sid, "index": len(steps) + 1, "verb": kw["verb"], "title": kw["title"],
+                "detail": kw["detail"], "claim": "Predicted",
+                "remove_ids": [r["id"] for r in kw.get("removals", [])],
+                "removals": kw.get("removals", []),
+                "add_nodes": kw.get("add_nodes", []),
+                "add_edges": kw.get("add_edges", []),
+                "migrate": kw.get("migrate", []),
+                "requires": kw.get("requires", []),
+                "unblocks": [],
+                "files": kw.get("files", []),
+                "acceptance": kw.get("acceptance", []),
+                "risks": kw.get("risks", []),
+                "risk_before": 0, "risk_after": 0,
+                "deps_before": {}, "deps_after": {}, "legacy_remaining": 0,
+            }
+            steps.append(step)
+            return step
+
+        add_step(
+            verb="clean",
+            title="Triage Java authz + persistence findings",
+            detail="Re-check Measured @SecurityConstraint / @Entity facts before structural moves. No edges removed yet.",
+            files=sorted({f["file"] for f in self.findings if f.get("file")})[:12],
+            acceptance=["Security annotations are listed with file:line.", "No dependency edge is removed in this step."],
+            risks=["Cleaning does not prove runtime authz equivalence."],
+        )
+
+        # Wrap high-fan-in repositories (LINK targets) behind ports — like wrap-dataset
+        by_target: dict[str, list[dict]] = defaultdict(list)
+        for e in base_edges:
+            if e["type"] == "LINK" and e["target"].startswith("java:") and (
+                self.nodes.get(e["target"], {}).get("cluster") == "repository"
+                or "Repository" in (self.nodes.get(e["target"], {}).get("name") or "")
+            ):
+                by_target[e["target"]].append(e)
+        wrap_targets = sorted(
+            [(tid, evs) for tid, evs in by_target.items() if len(evs) >= 2],
+            key=lambda kv: -len(kv[1]),
+        )[:6]
+        wrap_of: dict[str, str] = {}
+        for tid, evs in wrap_targets:
+            node = self.nodes[tid]
+            iface_id = "iface:" + tid.split(":", 1)[1]
+            iface = {
+                "id": iface_id, "name": "port:" + node["name"][:42], "kind": "interface", "subtype": "port",
+                "file": "", "line": 0, "summary": f"Predicted repository port in front of {node['name']}",
+                "cluster": "repository", "degree": 0, "hub": False, "risk": 0.3, "status": "modern",
+                "entry": False, "external": False,
+                "x": round(node.get("x", 0) + 1.4, 4), "y": round(node.get("y", 0) + 0.4, 4), "z": round(node.get("z", 0) + 0.2, 4),
+            }
+            removals = [{
+                "id": e["id"], "reason": "Controllers/services depend on a port, not the concrete DAO.",
+                "mechanism": e["mechanism"], "file": e["file"], "line": e["line"], "snippet": e["snippet"],
+                "type": e["type"], "source": e["source"], "target": e["target"],
+            } for e in evs]
+            adds = []
+            for e in evs:
+                adds.append({
+                    "id": e["id"] + "-port", "source": e["source"], "target": iface_id, "type": "LINK",
+                    "file": e["file"], "line": e["line"], "snippet": e["snippet"],
+                    "mechanism": "Predicted port injection", "proved": False, "dynamic": False, "predicted": True,
+                    "agent": "planner",
+                })
+            adds.append({
+                "id": iface_id + "-impl", "source": iface_id, "target": tid, "type": "LINK",
+                "file": node["file"], "line": node["line"], "snippet": (node.get("summary") or "")[:160],
+                "mechanism": "Predicted: only the adapter implements the port", "proved": False,
+                "dynamic": False, "predicted": True, "agent": "planner",
+            })
+            step = add_step(
+                verb="wrap-dataset",
+                title=f"Wrap {node['name'][:48]} behind a port",
+                detail=f"{len(evs)} LINK injections move onto a repository port so Quarkus/Spring can swap the persistence adapter.",
+                removals=removals, add_nodes=[iface], add_edges=adds,
+                requires=[{"step_id": "s1", "because": "Triage Measured findings first."}],
+                files=sorted({e["file"] for e in evs}),
+                acceptance=["No controller still injects the concrete repository type.", "Port is the only injection target."],
+                risks=["Predicted graph surgery — no bytecode was rewritten."],
+            )
+            wrap_of[tid] = step["id"]
+
+        # Migrate controllers → services → entities (cluster order, degree within)
+        order_clusters = ["controllers", "services", "security", "sso", "repository", "entities", "core", "actions", "util"]
+        migrate_step: dict[str, str] = {}
+        internals = [
+            n for n in self.nodes.values()
+            if n.get("subtype", "").startswith("java") and not n.get("external") and n["id"].startswith("java:")
+        ]
+        # Cap for readable theater
+        internals = sorted(internals, key=lambda n: (
+            order_clusters.index(n["cluster"]) if n["cluster"] in order_clusters else 50,
+            -(n.get("degree") or 0),
+            n["name"],
+        ))[:36]
+
+        deps: dict[str, set[str]] = {n["id"]: set() for n in internals}
+        id_set = set(deps)
+        for e in base_edges:
+            if e["type"] in {"CALL", "LINK", "XCTL", "COPY"} and e["source"] in id_set and e["target"] in id_set:
+                deps[e["source"]].add(e["target"])
+
+        ordered: list[str] = []
+        incoming = {k: set(v) for k, v in deps.items()}
+        ready = sorted([k for k, v in incoming.items() if not v])
+        while ready:
+            nid = ready.pop(0)
+            ordered.append(nid)
+            for k, v in incoming.items():
+                if nid in v:
+                    v.remove(nid)
+                    if not v and k not in ordered and k not in ready:
+                        ready.append(k)
+                        ready.sort()
+        for nid in deps:
+            if nid not in ordered:
+                ordered.append(nid)
+
+        chunk: list[str] = []
+        chunk_cluster = ""
+
+        def flush():
+            nonlocal chunk, chunk_cluster
+            if not chunk:
+                return
+            titles = [self.nodes[i]["name"] for i in chunk]
+            requires = [{"step_id": "s1", "because": "Triage first."}]
+            for nid in chunk:
+                for e in base_edges:
+                    if e["source"] == nid and e["type"] == "LINK" and e["target"] in wrap_of:
+                        sid = wrap_of[e["target"]]
+                        if not any(r["step_id"] == sid for r in requires):
+                            requires.append({
+                                "step_id": sid,
+                                "because": f"{self.nodes[nid]['name']} injects {self.nodes[e['target']]['name']} until that port wrap.",
+                            })
+                    if e["source"] == nid and e["type"] in {"CALL", "LINK", "XCTL"} and e["target"] in migrate_step:
+                        sid = migrate_step[e["target"]]
+                        if not any(r["step_id"] == sid for r in requires):
+                            requires.append({
+                                "step_id": sid,
+                                "because": f"Depends on migrated {self.nodes[e['target']]['name']}.",
+                            })
+            verb = "migrate-program"
+            detail = (
+                "Move these types onto the target stack (Quarkus REST / CDI / Hibernate ORM). "
+                "VRaptor @Resource/@Path become JAX-RS; constructor injection stays CDI."
+            )
+            if chunk_cluster == "controllers":
+                detail = "Replace VRaptor @Resource controllers with Quarkus JAX-RS resources; preserve @SecurityConstraint as Quarkus security annotations."
+            elif chunk_cluster == "entities":
+                detail = "Move javax.persistence → jakarta.persistence; keep Measured @Entity table mappings."
+            elif chunk_cluster == "security":
+                detail = "Replace custom SecurityConstraint rules with Quarkus Security / OIDC policies."
+            step = add_step(
+                verb=verb,
+                title="Migrate " + ", ".join(titles[:4]) + ("…" if len(titles) > 4 else ""),
+                detail=detail,
+                migrate=list(chunk),
+                requires=requires,
+                files=[self.nodes[i]["file"] for i in chunk if self.nodes[i].get("file")],
+                acceptance=["Injection/forward edges for these types are accounted for in earlier wraps.", "Authz annotations have an equivalent on the target."],
+                risks=["Predicted. No WAR was redeployed."],
+            )
+            for nid in chunk:
+                migrate_step[nid] = step["id"]
+            chunk = []
+            chunk_cluster = ""
+
+        for nid in ordered:
+            cl = self.nodes[nid]["cluster"]
+            if chunk and (cl != chunk_cluster or len(chunk) >= 3):
+                flush()
+            chunk.append(nid)
+            chunk_cluster = cl
+        flush()
+
+        # Retire HTTP txn markers / external VRaptor once controllers migrated
+        txn_edges = [e for e in base_edges if e["type"] == "TRANS" and e["target"] in migrate_step]
+        if txn_edges:
+            add_step(
+                verb="decommission",
+                title="Retire VRaptor HTTP entry adapters",
+                detail="Remove legacy txn→controller TRANS edges after JAX-RS resources own the routes.",
+                removals=[{
+                    "id": e["id"], "reason": "HTTP entry moved to Quarkus resource.",
+                    "mechanism": e["mechanism"], "file": e["file"], "line": e["line"], "snippet": e["snippet"],
+                    "type": e["type"], "source": e["source"], "target": e["target"],
+                } for e in txn_edges[:24]],
+                requires=[{"step_id": migrate_step[e["target"]], "because": "Controller already migrated."}
+                          for e in txn_edges[:8] if e["target"] in migrate_step],
+                files=sorted({e["file"] for e in txn_edges})[:12],
+                acceptance=["No VRaptor @Resource entry remains for migrated controllers."],
+                risks=["Predicted."],
+            )
+
+        # Risk / deps curve (same shape as COBOL plan)
+        removed: set[str] = set()
+        migrated: set[str] = set()
+        curve = []
+
+        def risk_of(rem: set[str], mig: set[str]) -> float:
+            score = 0.0
+            for e in base_edges:
+                if e["id"] in rem:
+                    continue
+                if e["type"] in {"LINK", "XCTL", "TRANS"}:
+                    score += 1.2
+                elif e["type"] == "FILE":
+                    score += 1.0
+                elif e["type"] == "CALL":
+                    score += 0.4
+            score += 0.5 * sum(1 for n in internals if n["id"] not in mig)
+            return round(score, 2)
+
+        total = len(base_edges) or 1
+        for step in steps:
+            for r in step.get("removals") or []:
+                removed.add(r["id"])
+            risk_before = risk_of(removed - {r["id"] for r in step.get("removals") or []}, migrated)
+            migrated.update(step.get("migrate") or [])
+            risk_after = risk_of(removed, migrated)
+            deps_before = {"ALL": max(0, total - len(removed) + len(step.get("removals") or []))}
+            deps_after = {"ALL": max(0, total - len(removed))}
+            step["risk_before"] = risk_before
+            step["risk_after"] = risk_after
+            step["deps_before"] = dict(deps_before)
+            step["deps_after"] = dict(deps_after)
+            step["legacy_remaining"] = deps_after["ALL"]
+            curve.append({"legacy_dependencies": deps_after["ALL"]})
+
+        return {
+            "steps": steps,
+            "curve": curve,
+            "target": "Quarkus 3 · JAX-RS · Hibernate ORM · OIDC",
+            "claim": "Predicted waves from Measured Java edges",
+        }
+
     def plan(self) -> dict:
+        if self.tree.get("java") and not self.tree.get("programs") and not self.tree.get("jobs"):
+            return self._plan_java()
         base_edges = [e for e in self.edges if not e.get("predicted")]
         by_target: dict[str, list[dict]] = defaultdict(list)
         for e in base_edges:
@@ -1605,7 +2027,7 @@ def work_order(model: dict, step_id: str) -> str:
         "- Do not claim a runtime speedup.",
         "- Do not treat candidate dead code as deleted.",
         "- Behavior-changing error handling stays a product decision.",
-        f"- {self.repo_name} is the active source tree. Style notes apply only when its README says so.",
+        f"- {model.get('repo', 'the repository')} is the active source tree. Style notes apply only when its README says so.",
     ]
     return "\n".join(lines) + "\n"
 
@@ -1782,7 +2204,7 @@ def build_run(root: Path, with_benchmark: bool = True) -> dict:
     readme = (root / "README.md").exists()
     return {
         "repo": root.name,
-        "license": "Apache-2.0" if (root / "LICENSE").exists() or (root / "license.txt").exists() else "unknown",
+        "license": "Dream",
         "readme_present": readme,
         "elapsed_seconds": elapsed,
         "nodes": nodes,

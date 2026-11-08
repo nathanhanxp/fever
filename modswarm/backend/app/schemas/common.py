@@ -2,6 +2,6 @@
 
 from typing import Literal
 
-EdgeType = Literal["calls", "http_calls", "renders"]
+EdgeType = str
 
 DiffType = Literal["added", "removed", "modified", "moved"]

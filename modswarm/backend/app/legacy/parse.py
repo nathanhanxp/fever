@@ -43,7 +43,10 @@ CICS_IO = {
 CICS_XFER = {"XCTL", "LINK", "START"}
 CICS_UI = {"SEND", "RECEIVE", "RETURN"}
 
-SKIP_DIRS = {".git", "node_modules", "__pycache__", "diagrams", "target", "build", ".gradle", "dist"}
+SKIP_DIRS = {
+    ".git", "node_modules", "__pycache__", "diagrams", "target", "build",
+    ".gradle", "dist", "test", "tests", "generated-sources",
+}
 
 
 def iter_source_files(root: Path):
@@ -52,7 +55,14 @@ def iter_source_files(root: Path):
             continue
         if any(part in SKIP_DIRS for part in path.parts):
             continue
-        if path.suffix.lower() in {".cbl", ".cpy", ".jcl", ".bms", ".prc", ".mac", ".asm", ".java"}:
+        # Prefer main sources over test trees even when folder name isn't exactly "test"
+        parts_l = {p.lower() for p in path.parts}
+        if "src" in parts_l and "test" in parts_l and path.suffix.lower() == ".java":
+            continue
+        if path.suffix.lower() in {
+            ".cbl", ".cob", ".cobol", ".cl2", ".cpy", ".copy", ".jcl", ".bms",
+            ".prc", ".proc", ".mac", ".asm", ".csd", ".ctl", ".java", ".inc",
+        }:
             yield path
 
 
@@ -421,6 +431,11 @@ def parse_bms(path: Path, root: Path) -> dict:
 
 
 def parse_java(path: Path, root: Path) -> dict:
+    """Deterministic Java facts for VRaptor/Spring/JPA trees (e.g. jforum3).
+
+    Extracts types, imports, extends/implements, constructor/field injection,
+    controller forwards, and a few security/persistence annotations — no LLM.
+    """
     text = path.read_text(encoding="utf-8", errors="replace")
     lines = text.splitlines()
     package = ""
@@ -429,16 +444,197 @@ def parse_java(path: Path, root: Path) -> dict:
         if m:
             package = m.group(1)
             break
-    classes = []
-    imports = []
+
+    classes: list[dict] = []
+    imports: list[dict] = []
+    extends: list[dict] = []
+    implements: list[dict] = []
+    injections: list[dict] = []
+    forwards: list[dict] = []
+    annotations: list[dict] = []
+    entities: list[dict] = []
+
+    # Simple name → fqcn from imports (for resolving Type.class / ctor params)
+    import_map: dict[str, str] = {}
     for i, line in enumerate(lines, 1):
-        cm = re.search(r"\b(?:class|interface|enum)\s+(\w+)", line)
-        if cm and not line.strip().startswith(("//", "*", "/*")):
-            classes.append({"name": cm.group(1), "line": i, "snippet": snippet(line)})
         im = re.match(r"\s*import\s+(?:static\s+)?([\w.]+)(\.\*)?\s*;", line)
         if im:
-            imports.append({"name": im.group(1), "line": i, "snippet": snippet(line), "star": bool(im.group(2))})
-    return {"path": str(path.relative_to(root)), "package": package, "classes": classes, "imports": imports}
+            fq = im.group(1)
+            star = bool(im.group(2))
+            imports.append({"name": fq, "line": i, "snippet": snippet(line), "star": star})
+            if not star:
+                import_map[fq.rsplit(".", 1)[-1]] = fq
+
+    def resolve(simple: str) -> str:
+        if "." in simple:
+            return simple
+        if simple in import_map:
+            return import_map[simple]
+        if package:
+            return f"{package}.{simple}"
+        return simple
+
+    # Strip block comments lightly for annotation/class scans
+    in_block = False
+    ctor_buf = ""
+    ctor_start = 0
+    current_type: str | None = None
+    pending_annos: list[tuple[str, int, str]] = []
+
+    for i, line in enumerate(lines, 1):
+        raw = line
+        s = line.strip()
+        if in_block:
+            if "*/" in s:
+                in_block = False
+            continue
+        if s.startswith("/*"):
+            if "*/" not in s:
+                in_block = True
+            continue
+        if s.startswith("//") or s.startswith("*"):
+            continue
+
+        for am in re.finditer(r"@(\w+)(?:\s*\(([^)]*)\))?", s):
+            aname, args = am.group(1), (am.group(2) or "").strip()
+            pending_annos.append((aname, i, snippet(raw)))
+            annotations.append({"name": aname, "args": args, "line": i, "snippet": snippet(raw)})
+            if aname in {"Entity", "Table", "MappedSuperclass"}:
+                entities.append({"name": aname, "line": i, "snippet": snippet(raw)})
+
+        cm = re.search(
+            r"\b(?:public|protected|private|abstract|final|static|\s)*"
+            r"(?:class|interface|enum)\s+(\w+)"
+            r"(?:\s+extends\s+([\w.]+))?"
+            r"(?:\s+implements\s+([\w.,\s]+))?",
+            s,
+        )
+        if cm:
+            name = cm.group(1)
+            kind = "interface" if re.search(r"\binterface\s+" + re.escape(name), s) else (
+                "enum" if re.search(r"\benum\s+" + re.escape(name), s) else "class"
+            )
+            roles = []
+            for aname, _, _ in pending_annos:
+                if aname in {"Resource", "Controller", "RestController", "Path"}:
+                    roles.append("controller")
+                elif aname in {"Repository", "Dao"}:
+                    roles.append("repository")
+                elif aname in {"Service", "Component"}:
+                    roles.append("service")
+                elif aname in {"Entity", "Table", "MappedSuperclass"}:
+                    roles.append("entity")
+            classes.append({
+                "name": name,
+                "kind": kind,
+                "line": i,
+                "snippet": snippet(raw),
+                "roles": sorted(set(roles)),
+                "annotations": [a[0] for a in pending_annos],
+            })
+            current_type = name
+            if cm.group(2):
+                parent = cm.group(2).strip()
+                extends.append({
+                    "name": resolve(parent),
+                    "simple": parent.rsplit(".", 1)[-1],
+                    "line": i,
+                    "snippet": snippet(raw),
+                    "owner": name,
+                })
+            if cm.group(3):
+                for part in cm.group(3).split(","):
+                    iface = part.strip()
+                    if not iface:
+                        continue
+                    implements.append({
+                        "name": resolve(iface),
+                        "simple": iface.rsplit(".", 1)[-1],
+                        "line": i,
+                        "snippet": snippet(raw),
+                        "owner": name,
+                    })
+            pending_annos = []
+
+        # Field injection: Type name;  or final Type name;
+        fm = re.match(
+            r"\s*(?:private|protected|public)?\s*(?:final\s+)?([A-Z]\w*(?:<[^>;]+>)?)\s+(\w+)\s*;",
+            s,
+        )
+        if fm and current_type and "(" not in s:
+            typ = re.sub(r"<.*?>", "", fm.group(1)).strip()
+            if typ not in {"String", "Integer", "Long", "Boolean", "Object", "int", "long", "boolean", "void"}:
+                injections.append({
+                    "type": resolve(typ),
+                    "simple": typ,
+                    "field": fm.group(2),
+                    "line": i,
+                    "snippet": snippet(raw),
+                    "owner": current_type,
+                    "via": "field",
+                })
+
+        # Constructor start — accumulate until closing paren for param types
+        if current_type and re.search(rf"\b{re.escape(current_type)}\s*\(", s) and "new " not in s:
+            ctor_buf = s
+            ctor_start = i
+            if ")" in s:
+                # same-line ctor
+                for pm in re.finditer(r"([A-Z]\w*(?:<[^>]+>)?)\s+(\w+)\s*(?:,|\))", ctor_buf):
+                    typ = re.sub(r"<.*?>", "", pm.group(1)).strip()
+                    if typ in {current_type, "String", "Integer", "Long", "Boolean", "Object"}:
+                        continue
+                    injections.append({
+                        "type": resolve(typ),
+                        "simple": typ,
+                        "field": pm.group(2),
+                        "line": ctor_start,
+                        "snippet": snippet(raw),
+                        "owner": current_type,
+                        "via": "ctor",
+                    })
+                ctor_buf = ""
+            continue
+        if ctor_buf:
+            ctor_buf += " " + s
+            if ")" in s:
+                for pm in re.finditer(r"([A-Z]\w*(?:<[^>]+>)?)\s+(\w+)\s*(?:,|\))", ctor_buf):
+                    typ = re.sub(r"<.*?>", "", pm.group(1)).strip()
+                    if typ in {current_type or "", "String", "Integer", "Long", "Boolean", "Object"}:
+                        continue
+                    injections.append({
+                        "type": resolve(typ),
+                        "simple": typ,
+                        "field": pm.group(2),
+                        "line": ctor_start,
+                        "snippet": snippet(lines[ctor_start - 1] if ctor_start else raw),
+                        "owner": current_type or "",
+                        "via": "ctor",
+                    })
+                ctor_buf = ""
+
+        # VRaptor / result.forwardTo(Foo.class)
+        for fm2 in re.finditer(r"forwardTo\s*\(\s*([A-Z]\w*)\s*\.class\s*\)", s):
+            forwards.append({
+                "name": resolve(fm2.group(1)),
+                "simple": fm2.group(1),
+                "line": i,
+                "snippet": snippet(raw),
+                "owner": current_type or (classes[0]["name"] if classes else ""),
+            })
+
+    return {
+        "path": str(path.relative_to(root)),
+        "package": package,
+        "classes": classes,
+        "imports": imports,
+        "extends": extends,
+        "implements": implements,
+        "injections": injections,
+        "forwards": forwards,
+        "annotations": annotations,
+        "entities": entities,
+    }
 
 
 def parse_tree(root: Path) -> dict:
@@ -450,11 +646,11 @@ def parse_tree(root: Path) -> dict:
     others = []
     for path in sorted(iter_source_files(root), key=lambda p: str(p)):
         suf = path.suffix.lower()
-        if suf == ".cbl":
+        if suf in {".cbl", ".cob", ".cobol", ".cl2"}:
             programs.append(parse_cobol(path, root))
-        elif suf == ".cpy":
+        elif suf in {".cpy", ".copy"}:
             copybooks.append(parse_copybook(path, root))
-        elif suf == ".jcl":
+        elif suf in {".jcl", ".prc", ".proc"}:
             jobs.append(parse_jcl(path, root))
         elif suf == ".bms":
             maps.append(parse_bms(path, root))

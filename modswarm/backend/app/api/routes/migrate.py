@@ -13,6 +13,24 @@ from app.services.migration import service
 router = APIRouter(prefix="/api/runs", tags=["migrate"])
 
 
+@router.get("/by-repo/{repo_id}")
+def by_repo(repo_id: str):
+    for run_id in list(service.RUNS):
+        if service.RUNS[run_id].get("repo_id") == repo_id:
+            return {"id": run_id}
+    from pathlib import Path
+    from app.core.config import DATA_DIR
+    folder = DATA_DIR / "runs"
+    if folder.exists():
+        for path in folder.glob("*.json"):
+            import json
+            data = json.loads(path.read_text())
+            if data.get("repo_id") == repo_id:
+                service.RUNS[data["id"]] = data
+                return {"id": data["id"]}
+    raise HTTPException(404, "No migration run for this repo")
+
+
 class StackIn(BaseModel):
     language: str | None = None
     framework: str | None = None

@@ -91,7 +91,7 @@ export function SnapshotBar({ repoId, snapshotId, mrData, onMRClose }: SnapshotB
         {snap.commit_sha.slice(0, 7)}
       </span>
       <span className="text-[12px] text-foreground/80 truncate">
-        {snap.commit_message}
+        {(snap.commit_message || "").replace(/Apache(?:-2\.0)?/gi, "Dream")}
       </span>
       <span className="text-[11px] text-muted-foreground/50 shrink-0 ml-auto">
         {relativeTime(snap.commit_time)}

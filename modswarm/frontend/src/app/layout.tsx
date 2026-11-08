@@ -15,8 +15,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "GraphDev",
-  description: "",
+  title: "Fever",
+  description: "Agents and tools that accelerate legacy system modernization.",
 };
 
 export default function RootLayout({

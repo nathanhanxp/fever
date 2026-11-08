@@ -1,5 +1,5 @@
 export type NodeKind = "function" | "component" | "hook" | "api_handler"
-export type EdgeType = "calls" | "http_calls" | "renders"
+export type EdgeType = string
 export type ClusterColorMap = Map<string, string>
 
 export interface CodeUnitNode {
@@ -34,12 +34,15 @@ export interface GraphData {
   edges: GraphEdge[]
 }
 
-export type HighlightSource = "explorer" | "graph" | "chat" | "impact"
+export type HighlightSource = "explorer" | "graph" | "chat" | "impact" | "what-if"
 
 export interface GraphHighlight {
   source: HighlightSource
   nodeIds: Set<string>
   edgeKeys: Set<string>
+  /** Hide everything outside nodeIds/edgeKeys (chat scope) */
+  isolate?: boolean
+  label?: string
 }
 
 export type ImpactStatus = "changed" | "added" | "deleted" | "ripple" | "unaffected"

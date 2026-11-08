@@ -52,7 +52,12 @@ function ThinkingStep({ step, expanded, onToggle, isNew }: {
       {expanded && hasContent && (
         <div className="mt-1 ml-6 max-h-48 overflow-y-auto mb-1">
           <div className="prose prose-sm dark:prose-invert max-w-none text-muted-foreground/70 break-words">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{step.content!}</ReactMarkdown>
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={{ script: () => null, iframe: () => null }}
+            >
+              {step.content!}
+            </ReactMarkdown>
           </div>
         </div>
       )}

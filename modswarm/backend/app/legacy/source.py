@@ -5,7 +5,8 @@ from __future__ import annotations
 import re
 
 SOURCE_SUFFIXES = {
-    ".cbl", ".cpy", ".jcl", ".bms", ".prc", ".mac", ".asm", ".csd", ".txt", ".md",
+    ".cbl", ".cob", ".cobol", ".cl2", ".cpy", ".copy", ".jcl", ".bms",
+    ".prc", ".proc", ".mac", ".asm", ".csd", ".ctl", ".txt", ".md", ".inc",
 }
 
 

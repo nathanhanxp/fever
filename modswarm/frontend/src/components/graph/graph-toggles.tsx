@@ -1,5 +1,6 @@
 "use client"
 
+import { useEffect } from "react"
 import { Sparkle, Waypoints, Network, X } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
@@ -9,10 +10,12 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
+import { useGraphStore } from "@/store/graph-store"
 
 export type ToggleKey = "labels" | "edges" | "clusters"
 
 interface GraphTogglesProps {
+  repoId?: string
   nodeCount: number
   edgeCount: number
   clusterCount: number
@@ -26,6 +29,8 @@ interface GraphTogglesProps {
   riskLevel?: string
   riskLabel?: string
   onRiskClose?: () => void
+  /** COBOL/CICS edge verbs — hide on Java/modern graphs */
+  showCobolLenses?: boolean
 }
 
 const toggles: {
@@ -41,7 +46,56 @@ const toggles: {
   { key: "clusters", icon: Network, countKey: "clusterCount", stateKey: "showClusters", onLabel: "Hide clusters", offLabel: "Show clusters" },
 ]
 
+const BASE_LENSES = [
+  "All",
+  "API",
+  "Data",
+  "Code",
+  "Platform",
+  "Batch",
+  "Integration",
+  "Security",
+  "Compliance",
+  "Migration",
+]
+
+const COBOL_LENSES = ["COPY", "CALL", "FILE", "JOB", "TRANS", "SCREEN"]
+
+const LENS_TO_TYPES: Record<string, string[]> = {
+  All: [],
+  Migration: ["migration-API", "migration-Data", "migration-Code", "migration-Platform", "migration-Batch", "migration-Integration", "migration-Security", "migration-Compliance"],
+  COPY: ["COPY"],
+  CALL: ["CALL"],
+  LINK: ["LINK"],
+  XCTL: ["XCTL"],
+  FILE: ["FILE"],
+  JOB: ["JOB"],
+  TRANS: ["TRANS"],
+  SCREEN: ["SCREEN"],
+  API: ["TRANS", "SCREEN", "LINK", "XCTL", "COPY", "migration-API"],
+  Data: ["FILE", "migration-Data"],
+  Code: ["CALL", "migration-Code"],
+  Platform: ["migration-Platform"],
+  Batch: ["JOB", "migration-Batch"],
+  Integration: ["migration-Integration"],
+  Security: ["migration-Security"],
+  Compliance: ["migration-Compliance"],
+}
+
 export function GraphToggles(props: GraphTogglesProps) {
+  const repoId = props.repoId ?? (typeof window !== "undefined" ? window.location.pathname.split("/")[1] : "")
+  const edgeTypeFilter = useGraphStore((s) => s.repos[repoId]?.edgeTypeFilter ?? "All")
+  // Default hide COBOL chips unless explicitly enabled (Java/jforum must stay clean)
+  const lenses = props.showCobolLenses === true
+    ? [...BASE_LENSES, ...COBOL_LENSES]
+    : BASE_LENSES
+
+  useEffect(() => {
+    if (props.showCobolLenses !== true && COBOL_LENSES.includes(edgeTypeFilter)) {
+      useGraphStore.getState().setEdgeTypeFilter(repoId, "All")
+    }
+  }, [props.showCobolLenses, edgeTypeFilter, repoId])
+
   if (props.isHighlighted) {
     return (
       <div className="absolute top-3 right-3 z-10">
@@ -65,6 +119,21 @@ export function GraphToggles(props: GraphTogglesProps) {
 
   return (
     <TooltipProvider>
+      <div className="absolute top-3 left-3 z-10 flex items-center gap-1 flex-wrap max-w-[62%]">
+        {lenses.map((lens) => (
+          <Badge
+            key={lens}
+            variant={edgeTypeFilter === lens ? "default" : "outline"}
+            className="h-5 px-2 text-[10px] cursor-pointer select-none"
+            onClick={() => {
+              useGraphStore.getState().setEdgeTypeFilter(repoId, lens)
+              if (lens !== "All" && !props.showEdges) props.onToggle("edges")
+            }}
+          >
+            {lens}
+          </Badge>
+        ))}
+      </div>
       <div className="absolute top-3 right-3 z-10 flex items-center gap-1.5">
         {props.riskLevel && (
           <>
@@ -112,3 +181,5 @@ export function GraphToggles(props: GraphTogglesProps) {
     </TooltipProvider>
   )
 }
+
+export { LENS_TO_TYPES }

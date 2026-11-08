@@ -495,3 +495,79 @@ async def sync_by_url(
         raise HTTPException(400, "Repo directory missing")
 
     return await _sync_repo_internal(repo.id, repo_dir, session, source_root=repo.source_root)
+
+
+@router.get("/{repo_id}/source")
+def repo_source(repo_id: str, path: str, line: int | None = None, session: Session = Depends(get_session)):
+    """Full file text for the bottom-left source pane; optional line for highlight."""
+    repo = session.get(Repo, repo_id)
+    if not repo:
+        raise HTTPException(404, "Repo not found")
+    root = _repo_dir(repo_id)
+    if repo.source_root:
+        root = root / repo.source_root
+    target = (root / path).resolve()
+    if not target.exists() or not str(target).startswith(str(root.resolve())):
+        from app.api.routes.swarm_api import _run_for
+        run = _run_for(repo_id)
+        if run and run.get("root"):
+            alt_root = Path(run["root"])
+            alt = (alt_root / path).resolve()
+            if alt.exists() and str(alt).startswith(str(alt_root.resolve())):
+                target = alt
+            else:
+                raise HTTPException(404, "File not found")
+        else:
+            raise HTTPException(404, "File not found")
+    text = target.read_text(errors="replace")
+    lines = text.splitlines()
+    return {
+        "path": path,
+        "line": line,
+        "line_count": len(lines),
+        "text": text,
+    }
+
+
+@router.delete("/{repo_id}")
+def delete_repo(repo_id: str, session: Session = Depends(get_session)):
+    """Delete one repository and its on-disk clone / migration run."""
+    import shutil
+
+    from app.core.config import DATA_DIR
+    from app.services.migration import service
+
+    repo = session.get(Repo, repo_id)
+    if not repo:
+        raise HTTPException(404, "Repo not found")
+
+    for snap in session.exec(select(ProjectGraphSnapshot).where(ProjectGraphSnapshot.repo_id == repo_id)).all():
+        for edge in session.exec(select(GraphEdge).where(GraphEdge.snapshot_id == snap.id)).all():
+            session.delete(edge)
+        for unit in session.exec(select(CodeUnit).where(CodeUnit.snapshot_id == snap.id)).all():
+            session.delete(unit)
+        session.delete(snap)
+    for mr in session.exec(select(MergeRequestAnalysis).where(MergeRequestAnalysis.repo_id == repo_id)).all():
+        session.delete(mr)
+    for cost in session.exec(select(WorkflowCost).where(WorkflowCost.repo_id == repo_id)).all():
+        session.delete(cost)
+
+    session.delete(repo)
+    session.commit()
+
+    dest = _repo_dir(repo_id)
+    if dest.exists():
+        shutil.rmtree(dest, ignore_errors=True)
+
+    for run_id, run in list(service.RUNS.items()):
+        if run.get("repo_id") == repo_id:
+            service.RUNS.pop(run_id, None)
+            path = DATA_DIR / "runs" / f"{run_id}.json"
+            if path.exists():
+                path.unlink(missing_ok=True)
+
+    for pattern in [f"vectors_{repo_id}*", f"reducer_*_{repo_id}.pkl"]:
+        for f in DATA_DIR.glob(pattern):
+            f.unlink(missing_ok=True)
+
+    return {"ok": True, "deleted": repo_id}

@@ -19,23 +19,26 @@ def parse_legacy_project(repo_root: str) -> tuple[list[ParsedUnit], list[ParsedE
     builder = Builder(root)
     builder.build_graph()
     builder.degrees_and_hubs()
+    is_java = bool(builder.tree.get("java")) and not builder.tree.get("programs")
     units: list[ParsedUnit] = []
     for node in builder.nodes.values():
         file_path = node.get("file") or ""
         start = int(node.get("line") or 1)
         text = node.get("summary") or node.get("name") or ""
+        lang = "java" if is_java or str(node.get("subtype") or "").startswith("java") else "cobol"
         units.append(ParsedUnit(
             file_path=file_path,
             symbol_name=node.get("name") or node["id"],
             qualname=node["id"],
             kind=node.get("kind") or "program",
             runtime="legacy",
-            language="cobol",
+            language=lang,
             start_line=start,
             end_line=start,
             code_hash=hashlib.sha256(f"{node['id']}:{text}".encode()).hexdigest()[:16],
             source_text=text,
         ))
+
     edges: list[ParsedEdge] = []
     for edge in builder.edges:
         etype = edge.get("type") or ""

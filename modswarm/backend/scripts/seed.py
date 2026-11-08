@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Seed script: creates repo, ingests all branches, enriches, and runs MR analysis.
-Usage: cd graphdev/backend && .venv/bin/python scripts/seed.py
+Usage: cd modswarm/backend && .venv/bin/python scripts/seed.py
 """
 
 import json
@@ -10,12 +10,13 @@ import sys
 import time
 from pathlib import Path
 
-API = "http://localhost:8000"
+API = "http://localhost:8090"
 KEY = "graphdev-hackathon-2026"
-REPO_URL = "https://gitlab.com/gitlab-ai-hackathon/participants/35368827.git"
-REPO_NAME = "pulse"
-SOURCE_ROOT = "pulse"
-MR_SOURCE_BRANCH = "feature/task-due-reminders"
+# Legacy GraphDev TypeScript seed (optional). CardDemo uses POST /api/preset/carddemo instead.
+REPO_URL = "https://github.com/example/your-ts-repo.git"
+REPO_NAME = "sample"
+SOURCE_ROOT = None
+MR_SOURCE_BRANCH = "feature/example"
 MR_TARGET_BRANCH = "main"
 
 

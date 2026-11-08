@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react"
 import Link from "next/link"
+import { useRouter } from "next/navigation"
 import { RefreshCw, Trash2 } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
@@ -33,7 +34,9 @@ interface AppHeaderProps {
 }
 
 export function AppHeader({ repo, repos }: AppHeaderProps) {
+  const router = useRouter()
   const [resetting, setResetting] = useState(false)
+  const [deleting, setDeleting] = useState(false)
   const [syncing, setSyncing] = useState(false)
   const [costInfo, setCostInfo] = useState<{ usd: number; tokens: number } | null>(null)
 
@@ -80,6 +83,22 @@ export function AppHeader({ repo, repos }: AppHeaderProps) {
     }
   }
 
+  const handleDeleteRepo = async () => {
+    if (!repo) return
+    setDeleting(true)
+    try {
+      const res = await apiFetch(`/api/repos/${repo.id}`, { method: "DELETE" })
+      if (!res.ok) throw new Error(await res.text())
+      toast.success(`Deleted ${repo.name}`)
+      const next = (repos || []).find((r) => r.id !== repo.id)
+      router.push(next ? `/${next.id}` : "/new")
+      router.refresh()
+    } catch {
+      toast.error("Delete failed")
+      setDeleting(false)
+    }
+  }
+
   const handleReset = async () => {
     setResetting(true)
     try {
@@ -93,7 +112,7 @@ export function AppHeader({ repo, repos }: AppHeaderProps) {
   return (
     <header className="fixed top-0 left-0 right-0 h-11 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80 flex items-center z-50">
       <div className="w-11 flex items-center justify-center">
-        <Link href="/">
+        <Link href={repo ? `/${repo.id}` : "/"} title={repo ? `Back to ${repo.name}` : "Home"}>
           <Logo
             width={28}
             height={28}
@@ -108,6 +127,16 @@ export function AppHeader({ repo, repos }: AppHeaderProps) {
           <RepoSwitcher repo={repo} repos={repos} />
         </div>
       )}
+
+      <nav className="flex items-center gap-2 ml-4 text-xs">
+        <Link className="text-muted-foreground hover:text-foreground" href="/new">Upload</Link>
+        {repo && (
+          <>
+            <Link className="text-muted-foreground hover:text-foreground" href={`/${repo.id}/swarm`}>Workflow</Link>
+            <Link className="text-muted-foreground hover:text-foreground" href={`/${repo.id}/migration`}>Migration</Link>
+          </>
+        )}
+      </nav>
 
       <div className="flex-1" />
 
@@ -131,32 +160,63 @@ export function AppHeader({ repo, repos }: AppHeaderProps) {
           </Button>
         )}
         <ThemeToggle />
-        <AlertDialog>
-          <AlertDialogTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon"
-              disabled={resetting}
-              className="cursor-pointer h-7 w-7 hover:text-destructive"
-            >
-              <Trash2 className="size-3.5" />
-            </Button>
-          </AlertDialogTrigger>
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>Reset everything?</AlertDialogTitle>
-              <AlertDialogDescription>
-                This will delete the database, all repos, vectors, and generated data. You will need to re-add and re-ingest repositories.
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel>Cancel</AlertDialogCancel>
-              <AlertDialogAction onClick={handleReset} disabled={resetting}>
-                {resetting ? "Resetting..." : "Reset"}
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
+        {repo && (
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                disabled={deleting}
+                className="cursor-pointer h-7 w-7 hover:text-destructive"
+                title="Delete this repository"
+              >
+                <Trash2 className="size-3.5" />
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Delete {repo.name}?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  Removes this repository, its graph snapshots, vectors, and migration run from the app. Other repos are untouched.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction onClick={handleDeleteRepo} disabled={deleting}>
+                  {deleting ? "Deleting…" : "Delete repo"}
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+        )}
+        {!repo && (
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                disabled={resetting}
+                className="cursor-pointer h-7 w-7 hover:text-destructive"
+              >
+                <Trash2 className="size-3.5" />
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Reset everything?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  This will delete the database, all repos, vectors, and generated data. You will need to re-add and re-ingest repositories.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction onClick={handleReset} disabled={resetting}>
+                  {resetting ? "Resetting..." : "Reset"}
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+        )}
       </div>
     </header>
   )

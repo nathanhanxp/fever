@@ -26,6 +26,12 @@ const IMPACT_COLORS: Record<string, string> = {
   deleted: "#6b7280",
 }
 
+const CYBER_COLORS: Record<string, string> = {
+  legacy: "#ef4444",
+  orange: "#f97316",
+  purple: "#a855f7",
+}
+
 function computeTargets(
   nodes: CodeUnitNode[],
   clusterColors: ClusterColorMap,
@@ -33,20 +39,27 @@ function computeTargets(
   highlight: GraphHighlight | null,
   bgColor: THREE.Color,
   impactMap: Map<string, ImpactStatus> | null,
+  cyberRisk?: Record<string, string | null>,
+  retiredIds?: Set<string>,
+  glowIds?: Set<string>,
+  cyberGlowIds?: Set<string>,
 ): NodeTarget[] {
   const orphan = new THREE.Color(isDark ? "#a0a0a0" : "#404040")
+  const stepGlow = new THREE.Color("#38bdf8")
   const tc = new THREE.Color()
 
   return nodes.map((n) => {
+    // MR overlay only — never used for migration playback
     if (impactMap) {
       const status = impactMap.get(n.id) ?? "unaffected"
       const impactColor = IMPACT_COLORS[status]
       if (impactColor) {
         tc.set(impactColor)
-        const opacity = status === "ripple" ? 0.8 : 1
+        const opacity = status === "deleted" ? 0.22 : status === "ripple" ? 0.8 : 1
+        const scale = status === "deleted" ? 0.08 : (isDark ? 0.15 : 0.17)
         return {
           x: n.x3d, y: n.y3d, z: n.z3d,
-          scale: isDark ? 0.15 : 0.17,
+          scale,
           r: tc.r * opacity + bgColor.r * (1 - opacity),
           g: tc.g * opacity + bgColor.g * (1 - opacity),
           b: tc.b * opacity + bgColor.b * (1 - opacity),
@@ -65,16 +78,55 @@ function computeTargets(
       }
     }
 
+    const isRetired = retiredIds?.has(n.id) ?? false
+    const isTarget = n.kind === "target" || n.runtime === "target"
+    // Regular Play glow vs predicted-risk glow (orange/purple) — only cyberGlowIds get risk paint
+    const glowing = glowIds?.has(n.id) ?? false
+    const cyberHot = glowing && (cyberGlowIds?.has(n.id) ?? false)
+    const cyber = cyberHot ? cyberRisk?.[n.id] : null
     const clusterColor = n.cluster_label ? clusterColors.get(n.cluster_label) : undefined
-    if (clusterColor) tc.set(clusterColor)
+    if (cyber && CYBER_COLORS[cyber]) tc.set(CYBER_COLORS[cyber])
+    else if (glowing) tc.copy(stepGlow)
+    else if (isTarget) tc.set("#34d399")
+    else if (clusterColor) tc.set(clusterColor)
     else tc.copy(orphan)
+
+    if (glowing) {
+      const hot = !!(cyber && CYBER_COLORS[cyber])
+      const m = hot ? 3.1 : 1.55
+      return {
+        x: n.x3d, y: n.y3d, z: n.z3d,
+        scale: hot ? 0.48 : 0.22,
+        r: tc.r * m, g: tc.g * m, b: tc.b * m,
+      }
+    }
+
+    if (isRetired) {
+      const dimOpacity = isDark ? 0.45 : 0.55
+      return {
+        x: n.x3d, y: n.y3d, z: n.z3d,
+        scale: isDark ? 0.13 : 0.14,
+        r: tc.r * dimOpacity + bgColor.r * (1 - dimOpacity),
+        g: tc.g * dimOpacity + bgColor.g * (1 - dimOpacity),
+        b: tc.b * dimOpacity + bgColor.b * (1 - dimOpacity),
+      }
+    }
 
     let opacity: number
     let bright = false
-    if (highlight) {
+    if (highlight && highlight.source !== "impact") {
       if (highlight.nodeIds.has(n.id)) {
         opacity = 1
         bright = true
+      } else if (highlight.isolate) {
+        const o = isDark ? 0.06 : 0.1
+        return {
+          x: n.x3d, y: n.y3d, z: n.z3d,
+          scale: 0.06,
+          r: tc.r * o + bgColor.r * (1 - o),
+          g: tc.g * o + bgColor.g * (1 - o),
+          b: tc.b * o + bgColor.b * (1 - o),
+        }
       } else {
         opacity = isDark ? 0.2 : 0.5
       }
@@ -89,7 +141,7 @@ function computeTargets(
 
     return {
       x: n.x3d, y: n.y3d, z: n.z3d,
-      scale: isDark ? 0.15 : 0.17,
+      scale: isTarget ? (isDark ? 0.22 : 0.24) : (isDark ? 0.15 : 0.17),
       r: r * opacity + bgColor.r * (1 - opacity),
       g: g * opacity + bgColor.g * (1 - opacity),
       b: b * opacity + bgColor.b * (1 - opacity),
@@ -98,7 +150,7 @@ function computeTargets(
 }
 
 export function NodeCloud({
-  nodes, clusterColors, isDark, highlight, onNodeClick, bgColor, impactMap,
+  nodes, clusterColors, isDark, highlight, onNodeClick, bgColor, impactMap, cyberRisk, retiredIds, glowIds, cyberGlowIds,
 }: {
   nodes: CodeUnitNode[]
   clusterColors: ClusterColorMap
@@ -107,6 +159,10 @@ export function NodeCloud({
   onNodeClick?: (nodeId: string) => void
   bgColor: string
   impactMap?: Map<string, ImpactStatus> | null
+  cyberRisk?: Record<string, string | null>
+  retiredIds?: Set<string>
+  glowIds?: Set<string>
+  cyberGlowIds?: Set<string>
 }) {
   const meshRef = useRef<THREE.InstancedMesh>(null)
   const pointerDownRef = useRef(0)
@@ -129,8 +185,8 @@ export function NodeCloud({
   const activeCount = useRef(0)
 
   const targets = useMemo(
-    () => computeTargets(nodes, clusterColors, isDark, highlight, bg, impactMap ?? null),
-    [nodes, clusterColors, isDark, highlight, bg, impactMap],
+    () => computeTargets(nodes, clusterColors, isDark, highlight, bg, impactMap ?? null, cyberRisk, retiredIds, glowIds, cyberGlowIds),
+    [nodes, clusterColors, isDark, highlight, bg, impactMap, cyberRisk, retiredIds, glowIds, cyberGlowIds],
   )
 
   useMemo(() => {
@@ -177,15 +233,21 @@ export function NodeCloud({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nodes])
 
-  useFrame((_, delta) => {
+  useFrame((state, delta) => {
     if (!meshRef.current || nodes.length === 0) return
     const pos = currentPos.current
     const col = currentCol.current
     const scl = currentScale.current
     const t = Math.min(1, delta * LERP_SPEED)
+    const pulse = 0.5 + 0.5 * Math.sin(state.clock.elapsedTime * 3.2)
 
     for (let i = 0; i < nodes.length; i++) {
       const tgt = targets[i]
+      const glowing = glowIds?.has(nodes[i].id) ?? false
+      const cyber = glowing && cyberGlowIds?.has(nodes[i].id) ? cyberRisk?.[nodes[i].id] : null
+      const hot = cyber === "orange" || cyber === "purple"
+      const pulseBoost = hot ? 1 + pulse * 0.95 : glowing ? 1 + pulse * 0.12 : 1
+      const glowBoost = hot ? 2.2 + pulse * 2.8 : glowing ? 1.15 : 1
 
       pos[i * 3] += (tgt.x - pos[i * 3]) * t
       pos[i * 3 + 1] += (tgt.y - pos[i * 3 + 1]) * t
@@ -195,14 +257,14 @@ export function NodeCloud({
       col[i * 3 + 1] += (tgt.g - col[i * 3 + 1]) * t
       col[i * 3 + 2] += (tgt.b - col[i * 3 + 2]) * t
 
-      scl[i] += (tgt.scale - scl[i]) * t
+      scl[i] += (tgt.scale * pulseBoost - scl[i]) * t
 
       tempObj.position.set(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2])
       tempObj.scale.setScalar(scl[i])
       tempObj.updateMatrix()
       meshRef.current.setMatrixAt(i, tempObj.matrix)
 
-      tempColor.setRGB(col[i * 3], col[i * 3 + 1], col[i * 3 + 2])
+      tempColor.setRGB(col[i * 3] * glowBoost, col[i * 3 + 1] * glowBoost, col[i * 3 + 2] * glowBoost)
       meshRef.current.setColorAt(i, tempColor)
     }
 

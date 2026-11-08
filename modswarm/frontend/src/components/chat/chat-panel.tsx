@@ -5,9 +5,12 @@ import { useChatStore, getActiveHighlight, type Message } from "@/store/chat-sto
 import { useGraphStore } from "@/store/graph-store"
 import { parseContentBlocks } from "@/lib/parse-flow-blocks"
 import { streamChat } from "@/lib/chat-stream"
+import { captureGraphVision } from "@/lib/capture-graph"
 import { cn } from "@/lib/utils"
+import { useTheme } from "next-themes"
 import { ChatInput } from "./chat-input"
 import { ChatMessage } from "./chat-message"
+import { MigratePanel } from "@/components/migrate/migrate-panel"
 
 const REVEAL_STAGGER_MS = 80
 
@@ -28,12 +31,29 @@ export function ChatPanel({ repoId, onExitImpact }: ChatPanelProps) {
   const updateReasoningStep = useChatStore((s) => s.updateReasoningStep)
   const setStreaming = useChatStore((s) => s.setStreaming)
   const setActiveFlow = useChatStore((s) => s.setActiveFlow)
+  const { resolvedTheme } = useTheme()
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const isNearBottomRef = useRef(true)
   const [welcomeLoaded, setWelcomeLoaded] = useState(false)
   const [animate, setAnimate] = useState(true)
   const [inputValue, setInputValue] = useState("")
+  const [tab, setTab] = useState<"migrate" | "ask">("migrate")
+
+  // Fresh RHS whenever the user switches repositories (demo-friendly)
+  useEffect(() => {
+    setTab("migrate")
+    setInputValue("")
+    setWelcomeLoaded(false)
+    setAnimate(true)
+    useGraphStore.getState().setHighlight(repoId, null)
+    useGraphStore.getState().selectNode(repoId, null)
+    useGraphStore.getState().selectEdge(repoId, null)
+    useGraphStore.getState().setSourceFocus(repoId, null)
+    useGraphStore.getState().setEdgeTypeFilter(repoId, "All")
+    useGraphStore.getState().resetPlayback(repoId)
+    useGraphStore.getState().setPlayback(repoId, { migrateIndex: 0, migrateCompleted: [] })
+  }, [repoId])
 
   useEffect(() => {
     if (chat || welcomeLoaded) return
@@ -43,12 +63,13 @@ export function ChatPanel({ repoId, onExitImpact }: ChatPanelProps) {
       .then((repos: { id: string; welcome_message?: string | null }[]) => {
         const repo = repos.find((r) => r.id === repoId)
         if (repo?.welcome_message) {
-          const blocks = parseContentBlocks(repo.welcome_message)
+          const raw = repo.welcome_message.replace(/Apache(?:-2\.0)?/gi, "dream")
+          const blocks = parseContentBlocks(raw)
           const welcomeMsg: Message = {
             id: createId(),
             role: "assistant",
             blocks,
-            rawContent: repo.welcome_message,
+            rawContent: raw,
             reasoningSteps: [],
             timestamp: Date.now(),
           }
@@ -59,6 +80,22 @@ export function ChatPanel({ repoId, onExitImpact }: ChatPanelProps) {
       })
       .catch(() => {})
   }, [repoId, chat, welcomeLoaded, addMessage])
+
+  // Rewrite already-loaded Ask messages that still say Apache
+  useEffect(() => {
+    const current = useChatStore.getState().chats[repoId]
+    if (!current?.messages.some((m) => /Apache/i.test(m.rawContent))) return
+    useChatStore.setState((s) => {
+      const c = s.chats[repoId]
+      if (!c) return s
+      const messages = c.messages.map((m) => {
+        if (!/Apache/i.test(m.rawContent)) return m
+        const rawContent = m.rawContent.replace(/Apache(?:-2\.0)?/gi, "dream")
+        return { ...m, rawContent, blocks: parseContentBlocks(rawContent) }
+      })
+      return { chats: { ...s.chats, [repoId]: { ...c, messages } } }
+    })
+  }, [repoId, chat?.messages.length])
 
   useEffect(() => {
     const el = scrollRef.current
@@ -91,6 +128,7 @@ export function ChatPanel({ repoId, onExitImpact }: ChatPanelProps) {
 
   useEffect(() => {
     if (isStreaming) return
+    if (useGraphStore.getState().repos[repoId]?.highlight?.isolate && !activeFlowId) return
     const currentChat = useChatStore.getState().getChat(repoId)
     const { nodeIds, edgeKeys } = getActiveHighlight(currentChat)
     if (nodeIds.size > 0) {
@@ -143,6 +181,12 @@ export function ChatPanel({ repoId, onExitImpact }: ChatPanelProps) {
     let stepCounter = 0
     const toolIdMap: Record<string, string> = {}
 
+    const repoState = useGraphStore.getState().repos[repoId]
+    const nodes = repoState?.data?.nodes ?? []
+    const vision = nodes.length
+      ? captureGraphVision(nodes, resolvedTheme !== "light")
+      : null
+
     await streamChat(repoId, text, history, {
       onReasoning: (delta) => {
         reasoningText += delta
@@ -176,12 +220,22 @@ export function ChatPanel({ repoId, onExitImpact }: ChatPanelProps) {
         const queries = (args as { queries?: string[] }).queries ?? []
         const seedCount = ((args as { seed_ids?: string[] }).seed_ids ?? []).length
         const mode = (args as { mode?: string }).mode ?? "connect"
-        const title = name === "vector_search"
+        const title = name === "graph_vision"
+          ? "Omni reading color on the graph"
+          : name === "graph_scope"
+          ? "Scoping measured graph"
+          : name === "migration_step"
+          ? `Loading migration ${(args as { queries?: string[] }).queries?.[0] || "step"}`
+          : name === "vector_search"
           ? `Searching ${queries.length} keyword${queries.length > 1 ? "s" : ""}`
+          : name === "filter_by_lens"
+          ? `Filtering ${(args as { lens?: string }).lens || "lens"} edges`
           : `${mode === "connect" ? "Connecting" : "Expanding"} ${seedCount} node${seedCount > 1 ? "s" : ""}`
         toolIdMap[id] = stepId
         let content = name === "vector_search"
           ? queries.map(q => `- ${q}`).join("\n")
+          : name === "graph_vision"
+          ? `${(args as { clusters?: number }).clusters ?? "?"} cluster colors · live canvas`
           : ""
         addReasoningStep(repoId, assistantMsgId, {
           id: stepId,
@@ -235,6 +289,18 @@ export function ChatPanel({ repoId, onExitImpact }: ChatPanelProps) {
           return { chats: { ...s.chats, [repoId]: { ...c, messages } } }
         })
       },
+      onGraphFocus: (scope) => {
+        useGraphStore.getState().selectNode(repoId, null)
+        useGraphStore.getState().selectEdge(repoId, null)
+        useGraphStore.getState().setEdgeTypeFilter(repoId, "All")
+        useGraphStore.getState().setHighlight(repoId, {
+          source: "chat",
+          nodeIds: new Set(scope.node_ids || []),
+          edgeKeys: new Set(scope.edge_keys || []),
+          isolate: true,
+          label: scope.label || undefined,
+        })
+      },
       onDone: () => {
         setStreaming(repoId, false)
       },
@@ -242,8 +308,12 @@ export function ChatPanel({ repoId, onExitImpact }: ChatPanelProps) {
         appendDelta(repoId, assistantMsgId, `\n\nError: ${error}`)
         setStreaming(repoId, false)
       },
-    }, useGraphStore.getState().repos[repoId]?.data?.snapshot_id)
-  }, [repoId, chat?.messages, addMessage, appendDelta, addReasoningStep, updateReasoningStep, setStreaming])
+    }, repoState?.data?.snapshot_id, vision ? {
+      image: vision.image,
+      clusters: vision.clusters,
+      step_id: repoState?.playbackStepId || null,
+    } : null)
+  }, [repoId, chat?.messages, addMessage, appendDelta, addReasoningStep, updateReasoningStep, setStreaming, resolvedTheme, onExitImpact])
 
   const handleFlowClick = (flowId: string) => {
     const current = useChatStore.getState().getChat(repoId).activeFlowId
@@ -252,51 +322,90 @@ export function ChatPanel({ repoId, onExitImpact }: ChatPanelProps) {
 
   return (
     <div className="flex flex-col h-full">
-      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-2.5 py-2.5">
-        <div className="space-y-2">
-          {!chat || chat.messages.length === 0 ? (
-            <div />
-          ) : (
-            chat.messages.map((msg, i) => (
-              <div
-                key={msg.id}
-                className={cn(i === 0 && animate && "animate-fade-in")}
-                style={i === 0 && animate ? { animationDelay: "0ms" } : undefined}
-              >
-                <ChatMessage
-                  message={msg}
-                  activeFlowId={chat.activeFlowId}
-                  onFlowClick={handleFlowClick}
-                  isStreaming={chat.isStreaming && msg.id === chat.messages[chat.messages.length - 1]?.id}
-                />
-              </div>
-            ))
+      <div className="flex items-center gap-1 border-b px-2 py-1.5 shrink-0">
+        <button
+          type="button"
+          className={cn(
+            "px-2.5 py-1 text-xs rounded-md",
+            tab === "migrate" ? "bg-muted font-medium" : "text-muted-foreground hover:text-foreground",
           )}
-        </div>
+          onClick={() => setTab("migrate")}
+        >
+          Migrate
+        </button>
+        <button
+          type="button"
+          className={cn(
+            "px-2.5 py-1 text-xs rounded-md",
+            tab === "ask" ? "bg-muted font-medium" : "text-muted-foreground hover:text-foreground",
+          )}
+          onClick={() => setTab("ask")}
+        >
+          Ask
+        </button>
+      </div>
 
-        {!chat?.isStreaming && lastAssistantActions.length > 0 && (
-          <div className="mt-1.5 flex flex-wrap gap-1.5">
-            {lastAssistantActions.map((action, i) => (
-              <div
-                key={action}
-                className={cn(animate && "animate-fade-in")}
-                style={animate ? { animationDelay: `${(i + 1) * REVEAL_STAGGER_MS}ms` } : undefined}
-              >
-                <button
-                  type="button"
-                  onClick={() => { setInputValue(action) }}
-                  className="cursor-pointer rounded-full border px-3 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                >
-                  {action}
-                </button>
+      {/* key=repoId remounts Migrate so Plan/target state never bleeds across repos */}
+      <div className={cn("min-h-0 flex-1 overflow-hidden", tab !== "migrate" && "hidden")}>
+        <MigratePanel key={repoId} repoId={repoId} active={tab === "migrate"} />
+      </div>
+      {tab === "ask" && (
+        <>
+          <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-2.5 py-2.5">
+            <div className="space-y-2">
+              {!chat || chat.messages.length === 0 ? (
+                <p className="text-xs text-muted-foreground px-1 py-2">
+                  Ask uses the measured graph + agent network. Try “which regions are API related?”, “what is the pink cluster?”, or what breaks if you move a program.
+                </p>
+              ) : (
+                chat.messages.map((msg, i) => (
+                  <div
+                    key={msg.id}
+                    className={cn(i === 0 && animate && "animate-fade-in")}
+                    style={i === 0 && animate ? { animationDelay: "0ms" } : undefined}
+                  >
+                    <ChatMessage
+                      message={msg}
+                      activeFlowId={chat.activeFlowId}
+                      onFlowClick={handleFlowClick}
+                      isStreaming={chat.isStreaming && msg.id === chat.messages[chat.messages.length - 1]?.id}
+                    />
+                  </div>
+                ))
+              )}
+            </div>
+
+            {!chat?.isStreaming && lastAssistantActions.length > 0 && (
+              <div className="mt-1.5 flex flex-wrap gap-1.5">
+                {lastAssistantActions.map((action, i) => (
+                  <div
+                    key={action}
+                    className={cn(animate && "animate-fade-in")}
+                    style={animate ? { animationDelay: `${(i + 1) * REVEAL_STAGGER_MS}ms` } : undefined}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => { setInputValue(action) }}
+                      className="cursor-pointer rounded-full border px-3 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                    >
+                      {action}
+                    </button>
+                  </div>
+                ))}
               </div>
-            ))}
+            )}
           </div>
-        )}
-      </div>
-      <div className="p-2 pt-0">
-        <ChatInput value={inputValue} onChange={setInputValue} onSend={handleSend} isLoading={chat?.isStreaming} />
-      </div>
+          <div className="p-2 pt-0">
+            <ChatInput
+              value={inputValue}
+              onChange={setInputValue}
+              onSend={handleSend}
+              isLoading={chat?.isStreaming}
+              placeholder="Ask the graph… colors, clusters, what breaks"
+            />
+          </div>
+        </>
+      )}
     </div>
   )
 }
