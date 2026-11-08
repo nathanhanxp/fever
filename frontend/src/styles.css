@@ -42,7 +42,7 @@ code, .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; }
 .grow { flex: 1; }
 .meta { color: var(--muted); font-size: 12px; }
 
-.panes { display: grid; grid-template-columns: 300px minmax(0, 1fr) 380px; min-height: 0; }
+.panes { display: grid; grid-template-columns: 300px minmax(0, 1fr) 340px; min-height: 0; }
 .pane { min-height: 0; display: flex; flex-direction: column; border-right: 1px solid var(--line); background: var(--panel); }
 .pane:last-child { border-right: 0; }
 .pane h2, .section h3 { margin: 0; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); font-weight: 500; }
@@ -88,6 +88,20 @@ code, .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; }
 }
 .glabel.unit { opacity: 0; animation: fadein 0.35s ease forwards; }
 @keyframes fadein { to { opacity: 1; } }
+.legend-toggle {
+  position: absolute; left: 10px; bottom: 168px; z-index: 3;
+}
+.step-strip { display: flex; gap: 4px; overflow: auto; margin-top: 6px; }
+.bars { display: grid; gap: 2px; margin: 2px 0 6px; }
+.bars i { display: block; height: 6px; background: #6a655c; }
+.bars i.after { background: #8fd18a; }
+.drop {
+  margin: 8px 12px; border: 1px dashed var(--line); border-radius: 6px; padding: 10px;
+  color: var(--muted); font-size: 12px;
+}
+.gantt { display: flex; flex-direction: column; gap: 4px; }
+.gantt .row { display: grid; grid-template-columns: 160px 1fr; gap: 8px; align-items: center; width: 100%; background: none; border: 0; color: inherit; text-align: left; }
+.gantt .bar { height: 14px; border-radius: 3px; min-width: 2px; }
 .legend {
   position: absolute; left: 10px; bottom: 118px; display: flex; flex-wrap: wrap; gap: 6px 10px;
   background: rgba(12, 14, 18, 0.82); border: 1px solid var(--line); padding: 8px; border-radius: 6px;

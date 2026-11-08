@@ -10,5 +10,6 @@ dist/
 .DS_Store
 frontend/dist/
 backend/.cache/
+backend/.workspaces/
 *.log
 35368827-main/

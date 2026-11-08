@@ -43,7 +43,7 @@ CICS_IO = {
 CICS_XFER = {"XCTL", "LINK", "START"}
 CICS_UI = {"SEND", "RECEIVE", "RETURN"}
 
-SKIP_DIRS = {".git", "node_modules", "__pycache__", "diagrams"}
+SKIP_DIRS = {".git", "node_modules", "__pycache__", "diagrams", "target", "build", ".gradle", "dist"}
 
 
 def iter_source_files(root: Path):
@@ -52,7 +52,7 @@ def iter_source_files(root: Path):
             continue
         if any(part in SKIP_DIRS for part in path.parts):
             continue
-        if path.suffix.lower() in {".cbl", ".cpy", ".jcl", ".bms", ".prc", ".mac", ".asm"}:
+        if path.suffix.lower() in {".cbl", ".cpy", ".jcl", ".bms", ".prc", ".mac", ".asm", ".java"}:
             yield path
 
 
@@ -420,11 +420,33 @@ def parse_bms(path: Path, root: Path) -> dict:
     }
 
 
+def parse_java(path: Path, root: Path) -> dict:
+    text = path.read_text(encoding="utf-8", errors="replace")
+    lines = text.splitlines()
+    package = ""
+    for line in lines[:40]:
+        m = re.match(r"\s*package\s+([\w.]+)\s*;", line)
+        if m:
+            package = m.group(1)
+            break
+    classes = []
+    imports = []
+    for i, line in enumerate(lines, 1):
+        cm = re.search(r"\b(?:class|interface|enum)\s+(\w+)", line)
+        if cm and not line.strip().startswith(("//", "*", "/*")):
+            classes.append({"name": cm.group(1), "line": i, "snippet": snippet(line)})
+        im = re.match(r"\s*import\s+(?:static\s+)?([\w.]+)(\.\*)?\s*;", line)
+        if im:
+            imports.append({"name": im.group(1), "line": i, "snippet": snippet(line), "star": bool(im.group(2))})
+    return {"path": str(path.relative_to(root)), "package": package, "classes": classes, "imports": imports}
+
+
 def parse_tree(root: Path) -> dict:
     programs = []
     copybooks = []
     jobs = []
     maps = []
+    java = []
     others = []
     for path in sorted(iter_source_files(root), key=lambda p: str(p)):
         suf = path.suffix.lower()
@@ -436,6 +458,8 @@ def parse_tree(root: Path) -> dict:
             jobs.append(parse_jcl(path, root))
         elif suf == ".bms":
             maps.append(parse_bms(path, root))
+        elif suf == ".java":
+            java.append(parse_java(path, root))
         else:
             others.append({"name": path.stem.upper(), "path": str(path.relative_to(root)), "suffix": suf})
     return {
@@ -443,5 +467,6 @@ def parse_tree(root: Path) -> dict:
         "copybooks": copybooks,
         "jobs": jobs,
         "maps": maps,
+        "java": java,
         "others": others,
     }

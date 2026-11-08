@@ -22,11 +22,11 @@ from .source import norm, read_text, snippet
 SONAR = "Sonar COBOL rule catalog (GO TO, duplication, complexity): https://rules.sonarsource.com/cobol/"
 CONTRAST = "Contrast COBOL scan rules (FILE STATUS, CICS RESP or NOHANDLE): https://docs.contrastsecurity.com/en/cobol-scan-rules.html"
 README_STYLE = (
-    "CardDemo README.md:38 — coding styles are intentional, to exercise analysis tooling. "
-    "These are detector results, not a criticism of AWS."
+    "Repository README — sample coding styles can be intentional, to exercise analysis tooling. "
+    "These are detector results."
 )
 README_TECH = (
-    "CardDemo README.md Technologies — COBOL, CICS, VSAM, JCL, RACF, assembler; "
+    "Repository README Technologies — COBOL, CICS, VSAM, JCL, RACF, assembler; "
     "optional DB2, IMS, and MQ."
 )
 DEAD_CAVEAT = (
@@ -122,10 +122,11 @@ def _line_ok(files: dict[str, list[str]], file: str, line: int, snip: str) -> bo
 class Builder:
     def __init__(self, root: Path):
         self.root = root
+        self.repo_name = root.name
         self.tree = parse_tree(root)
         self.files: dict[str, list[str]] = {}
         for path in root.rglob("*"):
-            if path.suffix.lower() in {".cbl", ".cpy", ".jcl", ".bms", ".md"} and path.is_file():
+            if path.suffix.lower() in {".cbl", ".cpy", ".jcl", ".bms", ".md", ".java"} and path.is_file():
                 rel = str(path.relative_to(root))
                 try:
                     self.files[rel] = read_text(path).splitlines()
@@ -210,7 +211,61 @@ class Builder:
         self.findings.append(f)
         return f
 
+    def _build_java(self) -> None:
+        files = self.tree["java"]
+        by_simple: dict[str, list[dict]] = defaultdict(list)
+        by_fqcn: dict[str, dict] = {}
+        for src in files:
+            for cls in src["classes"]:
+                fqcn = f"{src['package']}.{cls['name']}" if src["package"] else cls["name"]
+                row = {**cls, "fqcn": fqcn, "path": src["path"], "package": src["package"]}
+                by_simple[cls["name"]].append(row)
+                by_fqcn[fqcn] = row
+                self.node(
+                    f"java:{fqcn}", name=cls["name"], kind="program", subtype="java",
+                    file=src["path"], line=cls["line"],
+                    summary=f"Java type {fqcn}",
+                    cluster=src["package"].split(".")[-1] if src["package"] else "java",
+                )
+        for src in files:
+            for imp in src["imports"]:
+                if imp["star"]:
+                    continue
+                target = by_fqcn.get(imp["name"])
+                simple = imp["name"].rsplit(".", 1)[-1]
+                if target is None and len(by_simple.get(simple, [])) == 1 and imp["name"].endswith(simple):
+                    only = by_simple[simple][0]
+                    if imp["name"] == only["fqcn"] or imp["name"].endswith("." + simple):
+                        target = only
+                owner = src["classes"][0]["name"] if src["classes"] else src["path"]
+                owner_fqcn = f"{src['package']}.{owner}" if src["package"] and src["classes"] else owner
+                source_id = f"java:{owner_fqcn}" if src["classes"] else ""
+                if not source_id or source_id not in self.nodes:
+                    continue
+                if target is None:
+                    self.node(
+                        f"ext:{imp['name']}", name=simple, kind="program", subtype="external",
+                        summary=f"Imported type {imp['name']} is not defined in this tree",
+                        cluster="external", external=True,
+                    )
+                    self.edge(
+                        source_id, f"ext:{imp['name']}", "CALL", src["path"], imp["line"], imp["snippet"],
+                        "Java import of a type outside this tree", proved=False, agent="mapper",
+                    )
+                    continue
+                if f"java:{target['fqcn']}" == source_id:
+                    continue
+                self.edge(
+                    source_id, f"java:{target['fqcn']}", "CALL", src["path"], imp["line"], imp["snippet"],
+                    "Java import resolved to a type in this tree", proved=True, agent="mapper",
+                )
+
     def build_graph(self) -> None:
+        if self.tree.get("java") and not self.tree["programs"] and not self.tree["jobs"] and not self.tree["maps"]:
+            self._build_java()
+            return
+        if not self.tree["programs"] and not self.tree["jobs"] and not self.tree["maps"] and not self.tree["copybooks"]:
+            raise RuntimeError("This analyzer reads COBOL, JCL, BMS and copybooks")
         programs = {p["name"]: p for p in self.tree["programs"]}
         copy_index = {c["name"]: c for c in self.tree["copybooks"]}
         for c in self.tree["copybooks"]:
@@ -225,7 +280,7 @@ class Builder:
                     lens="platform-security", type="sensitive-field", rule="sensitive-field",
                     title=f"Sensitive field {s['name']} in shared layout {c['name']}",
                     file=c["path"], line=s["line"], snippet=s["snippet"],
-                    authority="Field declared in a CardDemo copybook. Name matches card, PAN, CVV, SSN, or password.",
+                    authority=f"Field declared in a {self.repo_name} copybook. Name matches card, PAN, CVV, SSN, or password.",
                     agent="platform-security-lens", claim="Measured", severity="high",
                     node_id=f"cpy:{c['name']}", confidence=0.86,
                 )
@@ -302,7 +357,7 @@ class Builder:
                         title=f"Security configuration commands in {job['name']}",
                         file=job["path"], line=job["line"],
                         snippet=snippet(self.files[job["path"]][job["line"] - 1]) if job["path"] in self.files else job["name"],
-                        authority="RACF or user-security JCL shipped with CardDemo. Platform end-of-life and access control stay with the mainframe unless re-homed.",
+                        authority=f"RACF or user-security JCL shipped with {self.repo_name}. Platform end-of-life and access control stay with the mainframe unless re-homed.",
                         agent="platform-security-lens", claim="Measured", severity="medium",
                         node_id=jid, confidence=0.8,
                     )
@@ -897,6 +952,10 @@ class Builder:
 
         # Migrate programs in an order that respects CALL/LINK and wraps.
         internal = [n for n in self.nodes.values() if n["kind"] == "program" and not n["external"] and n["subtype"] != "dynamic"]
+        if any(n.get("subtype") == "java" for n in internal):
+            ranked = sorted(internal, key=lambda n: (-(n.get("degree") or 0), n["name"]))
+            keep = {n["id"] for n in ranked[:18]}
+            internal = [n for n in internal if n["id"] in keep]
         deps: dict[str, set[str]] = {n["id"]: set() for n in internal}
         for e in base_edges:
             if e["type"] in {"CALL", "LINK"} and e["source"] in deps and e["target"] in deps:
@@ -1546,7 +1605,7 @@ def work_order(model: dict, step_id: str) -> str:
         "- Do not claim a runtime speedup.",
         "- Do not treat candidate dead code as deleted.",
         "- Behavior-changing error handling stays a product decision.",
-        "- CardDemo is Apache-2.0 sample code with intentional style variation.",
+        f"- {self.repo_name} is the active source tree. Style notes apply only when its README says so.",
     ]
     return "\n".join(lines) + "\n"
 
@@ -1574,7 +1633,7 @@ def apply_brief(model: dict, brief: dict) -> dict:
 
 def render_pdf(model: dict) -> bytes:
     lines = [
-        "Modernization Swarm — CardDemo roadmap",
+        f"Modernization Swarm — {model.get('repo', 'repository')} roadmap",
         "Dependency counts are detected edges, not effort or time.",
         "Simulator results are Predicted.",
         "",
@@ -1675,15 +1734,24 @@ def benchmark_local(root: Path) -> dict:
 
 def build_run(root: Path, with_benchmark: bool = True) -> dict:
     t0 = time.perf_counter()
-    b = Builder(root)
-    b.build_graph()
-    b.degrees_and_hubs()
-    b.optimizations()
-    b.prove_all()
-    triage = b.triage()
-    geometry = attach_geometry(list(b.nodes.values()), b.edges)
-    measured = b.measured_patch()
-    plan = b.plan()
+    phases: list[tuple[str, str, float, float]] = []
+
+    def phase(name: str, role: str, fn):
+        a = time.perf_counter()
+        out = fn()
+        b = time.perf_counter()
+        phases.append((name, role, a - t0, b - a))
+        return out
+
+    b = phase("graph", "Graph build", lambda: Builder(root))
+    phase("graph-edges", "Graph edges", b.build_graph)
+    phase("hubs", "Hubs", b.degrees_and_hubs)
+    phase("optimizations", "Optimizations", b.optimizations)
+    phase("prove", "Prove", b.prove_all)
+    triage = phase("triage", "Triage", b.triage)
+    geometry = phase("geometry", "Geometry", lambda: attach_geometry(list(b.nodes.values()), b.edges))
+    measured = phase("measured", "Measured patch", b.measured_patch)
+    plan = phase("plan", "Plan", b.plan)
     # Interface coordinates used dataset positions from before hub pull. Re-stamp from current dataset coords.
     for step in plan["steps"]:
         for node in step["add_nodes"]:
@@ -1710,11 +1778,11 @@ def build_run(root: Path, with_benchmark: bool = True) -> dict:
     _ordered, bad_violations = apply_order(plan["steps"], bad_order)
     elapsed = round(time.perf_counter() - t0, 3)
     bench = benchmark_local(root) if with_benchmark else {"rows": [], "note": "skipped"}
-    agents = _agents(elapsed, triage, len(nodes), len(b.edges))
+    agents = _phase_agents(phases)
     readme = (root / "README.md").exists()
     return {
         "repo": root.name,
-        "license": "Apache-2.0" if (root / "LICENSE").exists() else "unknown",
+        "license": "Apache-2.0" if (root / "LICENSE").exists() or (root / "license.txt").exists() else "unknown",
         "readme_present": readme,
         "elapsed_seconds": elapsed,
         "nodes": nodes,
@@ -1754,7 +1822,7 @@ def build_run(root: Path, with_benchmark: bool = True) -> dict:
             "Roadmap steps are a model of the detected graph. They do not prove a new system works.",
             "CICS programs were not executed. GnuCOBOL was not used to claim equivalence.",
             "Optimization rows are Predicted. No speedup is claimed.",
-            "CardDemo varies its style on purpose (README). Detectors are demonstrating themselves.",
+            "If the README says the style is intentional, the detectors are demonstrating themselves.",
             "Dependency counts cover only what the parsers detected.",
         ],
         "models": [
@@ -1766,28 +1834,23 @@ def build_run(root: Path, with_benchmark: bool = True) -> dict:
     }
 
 
-def _agents(elapsed: float, triage: dict, nodes: int, edges: int) -> list[dict]:
-    # Times are shares of the measured build, so the timeline sums to the real wall clock.
-    spec = [
-        ("coordinator", "Coordinator", 0.04, "Sharded the tree and ordered lenses. Re-plan waits for a brief edit."),
-        ("mapper", "Mapper pool", 0.28, f"Parsed programs, copybooks, JCL, and BMS into {nodes} units."),
-        ("code-lens", "Code lens", 0.1, "CALL, XCTL, LINK, TRANS, and SCREEN from CICS and CALL statements."),
-        ("data-lens", "Data lens", 0.1, "FILE edges from SELECT/ASSIGN and CICS file commands, joined to JCL DSNs when the DD name matches."),
-        ("operations-lens", "Operations lens", 0.1, "JOB edges, step order, PARM literals, instream password patterns."),
-        ("platform-lens", "Platform and security lens", 0.08, "Sensitive fields, clear-text password compares, RACF and user-security JCL."),
-        ("quality-lens", "Quality and optimization lens", 0.12, f"Detectors emitted {triage['raw']} raw findings, {triage['triaged']} after triage."),
-        ("prover", "Prover", 0.08, "Rejected findings with no line, snippet, or authority. Dashed edges failed the line check or are dynamic."),
-        ("planner", "Planner", 0.1, "Built wrap, migrate, retire, and decommission steps. Validator checked preconditions."),
-    ]
+def _phase_agents(phases: list[tuple[str, str, float, float]]) -> list[dict]:
     out = []
-    acc = 0.0
-    for i, (aid, role, share, note) in enumerate(spec):
-        dur = round(elapsed * share, 4)
+    for name, role, started, seconds in phases:
         out.append({
-            "id": aid, "role": role, "status": "done",
-            "started": round(acc, 4), "seconds": dur,
-            "tokens": 0, "model": "deterministic-tools", "host": "local",
-            "note": note,
+            "id": name,
+            "role": role,
+            "status": "done",
+            "started": round(started, 4),
+            "seconds": round(seconds, 4),
+            "tokens": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "model": "deterministic-tools",
+            "host": "local",
+            "group": "deterministic",
+            "note": "",
+            "output": "",
+            "input_ref": "",
         })
-        acc += dur
     return out

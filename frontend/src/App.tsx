@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { ask, fetchFile, fetchRun, saveBrief, saveWeights, simulate, validateOrder, workOrderUrl } from "./api"
 import { edgeLegend, GraphCanvas, type Hop } from "./Graph"
-import { buildScene, dominantType } from "./graphView"
+import { buildScene, placeNodes } from "./graphView"
 import type { AskResult, GraphEdge, GraphNode, ResultCard, RunModel, Step } from "./types"
 import { EDGE_TYPES } from "./types"
 
@@ -17,15 +17,22 @@ export function App() {
   const [line, setLine] = useState(1)
   const [depth, setDepth] = useState(2)
   const [types, setTypes] = useState<string[]>([])
-  const [typesReady, setTypesReady] = useState(false)
   const [direction, setDirection] = useState<"both" | "down" | "up">("both")
-  const [hideHubs, setHideHubs] = useState(true)
+  const [hideHubs, setHideHubs] = useState(false)
+  const [clusterView, setClusterView] = useState(false)
   const [layout, setLayout] = useState<"layered" | "similarity" | "topdown">("layered")
   const [expanded, setExpanded] = useState<string | null>(null)
   const [overlay, setOverlay] = useState("none")
   const [showAllEdges, setShowAllEdges] = useState(false)
   const [edgeMenu, setEdgeMenu] = useState(false)
   const [hoverId, setHoverId] = useState<string | null>(null)
+  const [inspectTab, setInspectTab] = useState<"inspect" | "ask" | "plan">("inspect")
+  const [legendOpen, setLegendOpen] = useState(false)
+  const [graphMode, setGraphMode] = useState<"after" | "before" | "changes">("after")
+  const [orderNote, setOrderNote] = useState("")
+  const [epoch, setEpoch] = useState(0)
+  const [sourceMode, setSourceMode] = useState<"sample" | "upload">("sample")
+  const [uploadNote, setUploadNote] = useState("")
   const [stepIndex, setStepIndex] = useState(0)
   const [playing, setPlaying] = useState(false)
   const [question, setQuestion] = useState("What depends on COCOM01Y?")
@@ -43,13 +50,9 @@ export function App() {
       try {
         const run = await fetchRun()
         if (stop) return
+        if (run.nodes) setModel(run)
         if (run.status === "done" && run.nodes) {
-          setModel(run)
           setStatus("done")
-          if (!typesReady) {
-            setTypes([dominantType(run.edges)])
-            setTypesReady(true)
-          }
           return
         }
         setStatus(run.status || "running")
@@ -60,7 +63,7 @@ export function App() {
     }
     tick()
     return () => { stop = true }
-  }, [])
+  }, [epoch])
 
   useEffect(() => {
     if (!playing || !model) return
@@ -109,11 +112,21 @@ export function App() {
       rules: model.rules,
     })
   }, [view, model, layout, expanded, hideHubs, types, showAllEdges])
+  const beforeView = useMemo(() => project(model, Math.max(0, stepIndex - 1), types, false), [model, stepIndex, types])
+  const drawn = useMemo(() => {
+    if (!view || !scene || !beforeView) return null
+    const base = graphMode === "before" ? beforeView : view
+    let nodes = clusterView ? scene.nodes : placeNodes(base.nodes, layout)
+    let edges = clusterView ? scene.edges : base.edges
+    if (graphMode === "changes") edges = edges.filter((e) => e.visual === "removed" || e.visual === "added")
+    return { nodes, edges }
+  }, [view, beforeView, scene, clusterView, layout, graphMode])
 
   const hops = useMemo(() => {
-    if (!view || !model || !scene) return {}
+    if (!view || !model || !scene || !drawn) return {}
     if (answer?.highlight && (answer.highlight.focus || Object.keys(answer.highlight.downstream).length)) {
       const lift = (id: string) => {
+        if (!clusterView) return id
         const n = model.nodes.find((x) => x.id === id)
         if (!n) return id
         const cap = n.capability || n.cluster
@@ -134,9 +147,9 @@ export function App() {
       return map
     }
     if (selected) {
-      const map = walk(scene.edges, selected, depth, direction)
+      const map = walk(drawn.edges, selected, depth, direction)
       if (stepIndex > 0) {
-        for (const e of scene.edges) {
+        for (const e of drawn.edges) {
           if (e.visual !== "removed" && e.visual !== "added") continue
           if (!map[e.source]) map[e.source] = { hop: 1, dir: "down" }
           if (!map[e.target]) map[e.target] = { hop: 1, dir: "down" }
@@ -146,7 +159,7 @@ export function App() {
     }
     if (stepIndex > 0) {
       const pin: Record<string, Hop> = {}
-      for (const e of scene.edges) {
+      for (const e of drawn.edges) {
         if (e.visual === "removed" || e.visual === "added") {
           pin[e.source] = { hop: 0, dir: "focus" }
           pin[e.target] = { hop: 1, dir: "down" }
@@ -155,10 +168,52 @@ export function App() {
       return pin
     }
     return {}
-  }, [view, model, scene, answer, selected, depth, direction, stepIndex, expanded, hideHubs])
+  }, [view, model, scene, drawn, answer, selected, depth, direction, stepIndex, expanded, hideHubs, clusterView])
 
-  if (!model || !view || !scene) {
-    return <div className="loading">Mapping CardDemo… {status}. Parsers are reading COBOL, JCL, and BMS.</div>
+  useEffect(() => {
+    if (!model) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return
+      const tag = (e.target as HTMLElement | null)?.tagName
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return
+      setPlaying(false)
+      setStepIndex((i) => e.key === "ArrowRight" ? Math.min(model.plan.steps.length, i + 1) : Math.max(0, i - 1))
+    }
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [model])
+
+  if (!model || !view || !scene || !drawn) {
+    return <div className="loading">Mapping the repository… {status}. Parsers are reading the source tree.</div>
+  }
+
+  const sendZip = async (file: File) => {
+    if (file.size > 200 * 1024 * 1024) {
+      setUploadNote("That zip is over 200 MB.")
+      return
+    }
+    setUploadNote("Uploading…")
+    const res = await fetch("/api/upload", { method: "POST", headers: { "Content-Type": "application/zip" }, body: file })
+    const data = await res.json().catch(() => ({ error: "Upload failed" }))
+    if (!res.ok) {
+      setUploadNote(data.detail || data.error || "Upload failed")
+      return
+    }
+    setUploadNote(data.message || "Rebuilding")
+    setEpoch((n) => n + 1)
+  }
+
+  const moveStep = async (step: Step, dir: number) => {
+    const ids = model.plan.steps.map((s) => s.id)
+    const i = ids.indexOf(step.id)
+    const j = i + dir
+    if (j < 0 || j >= ids.length) return
+    const next = ids.slice()
+    const [row] = next.splice(i, 1)
+    next.splice(j, 0, row)
+    const res = await validateOrder(next)
+    const messages = (res.violations || []).map((v) => v.message)
+    setOrderNote(messages.length ? messages.join(" ") : "Validator accepted this order. The drawn plan stays the computed order.")
   }
 
   const node = view.nodes.find((n) => n.id === selected) || model.nodes.find((n) => n.id === selected)
@@ -241,7 +296,7 @@ export function App() {
         <div className="brand">Modernization <span>Swarm</span></div>
         <div className="tabs">
           <button className={tab === "explore" ? "on" : ""} onClick={() => setTab("explore")}>Explore</button>
-          <button className={tab === "agents" ? "on" : ""} onClick={() => setTab("agents")}>Agents</button>
+          <button className={tab === "agents" ? "on" : ""} onClick={() => setTab("agents")}>Swarm</button>
         </div>
         <div className="meta grow">
           {model.repo} · {model.license} · {model.stats.programs} programs · {model.stats.edges} edges · {model.elapsed_seconds}s
@@ -251,7 +306,38 @@ export function App() {
       {tab === "explore" ? (
         <div className="panes">
           <section className="pane">
-            <div className="pane-h"><h2>Legacy code</h2></div>
+            <div className="pane-h">
+              <h2>{model.repo}</h2>
+              <div className="tabs">
+                <button className={sourceMode === "sample" ? "on" : ""} onClick={() => setSourceMode("sample")}>Sample</button>
+                <button className={sourceMode === "upload" ? "on" : ""} onClick={() => setSourceMode("upload")}>Upload</button>
+              </div>
+            </div>
+            {sourceMode === "upload" && (
+              <div
+                className="drop"
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => {
+                  e.preventDefault()
+                  const file = e.dataTransfer.files?.[0]
+                  if (file) void sendZip(file)
+                }}
+              >
+                Drop a .zip, 200 MB max.
+                <input type="file" accept=".zip,application/zip" onChange={(e) => {
+                  const file = e.target.files?.[0]
+                  if (file) void sendZip(file)
+                }} />
+                <p className="meta">{uploadNote}</p>
+                <button className="btn" onClick={async () => {
+                  setUploadNote("Resetting…")
+                  const res = await fetch("/api/reset", { method: "POST" })
+                  const data = await res.json()
+                  setUploadNote(data.message || data.error || "")
+                  setEpoch((n) => n + 1)
+                }}>Reset to CardDemo</button>
+              </div>
+            )}
             <div className="scroll" style={{ maxHeight: "34%" }}>
               <FileTree nodes={model.nodes} active={filePath} onOpen={(p) => openFile(p, 1)} />
             </div>
@@ -267,13 +353,24 @@ export function App() {
                   {key === "layered" ? "Layered" : key === "similarity" ? "Similarity" : "2D top-down"}
                 </button>
               ))}
-              <button className="chip" onClick={() => setEdgeMenu((v) => !v)}>Edges: {types.join(", ") || "none"}</button>
+              <button className={clusterView ? "chip on" : "chip"} onClick={() => { setClusterView((v) => !v); setExpanded(null); setSelected("") }}>
+                {clusterView ? "Clusters" : "All units"}
+              </button>
+              <button className="chip" onClick={() => setEdgeMenu((v) => !v)}>Edges: {types.length ? types.join(", ") : "all"}</button>
               <button className={hideHubs ? "chip on" : "chip"} onClick={() => setHideHubs((v) => !v)}>
                 {scene.hubCopybooks} shared copybooks affect everything below
               </button>
               <button className={showAllEdges ? "chip on" : "chip"} onClick={() => setShowAllEdges((v) => !v)}>
                 {showAllEdges ? "Showing all edges" : `Top edges · ${scene.hiddenEdges} hidden`}
               </button>
+              <label className="chip">
+                Overlay
+                <select value={overlay} onChange={(e) => setOverlay(e.target.value)} style={{ background: "transparent", color: "inherit", border: 0 }}>
+                  {["none", "prover", "risk", "quality", "blast", "ledger", "legacy"].map((name) => (
+                    <option key={name} value={name}>{name}</option>
+                  ))}
+                </select>
+              </label>
               {edgeMenu && (
                 <div className="popover">
                   {EDGE_TYPES.map((t) => (
@@ -282,28 +379,34 @@ export function App() {
                       {t}
                     </label>
                   ))}
+                  <label className="meta">Hop depth {depth}</label>
+                  <input type="range" min={1} max={4} value={depth} onChange={(e) => setDepth(Number(e.target.value))} />
+                  {(["both", "down", "up"] as const).map((d) => (
+                    <button key={d} className={direction === d ? "chip on" : "chip"} onClick={() => setDirection(d)}>
+                      {d === "down" ? "Downstream" : d === "up" ? "Upstream" : "Both"}
+                    </button>
+                  ))}
                 </div>
               )}
               <span className="meta" title={model.geometry?.clustering?.note}>{scene.nodes.filter((n) => n.kind === "cluster").length} clusters</span>
               {layout === "similarity" && model.geometry?.similarity?.error && <span className="warn">{model.geometry.similarity.error}</span>}
             </div>
-            <div className="overlay-bar">
-              {["none", "prover", "risk", "quality", "blast", "ledger", "legacy"].map((name) => (
-                <label key={name}><input type="radio" name="overlay" checked={overlay === name} onChange={() => setOverlay(name)} />{name}</label>
-              ))}
-            </div>
-            {scene.nodes.length === 0 ? (
-              <div className="loading">No clusters to draw with the current filters.</div>
+            {drawn.nodes.length === 0 ? (
+              <div className="loading">No nodes to draw with the current filters.</div>
             ) : (
-              <GraphCanvas nodes={scene.nodes} edges={scene.edges} hops={hops} migrated={scene.migrated} onSelect={selectNode}
-                overlay={overlay} focus={!!selected || stepIndex > 0} topdown={layout === "topdown"} labelIds={labelIds} onHover={setHoverId} />
+              <GraphCanvas nodes={drawn.nodes} edges={drawn.edges} hops={hops} migrated={view.migrated} onSelect={selectNode}
+                overlay={overlay} focus={!!selected || stepIndex > 0} topdown={layout === "topdown"} labelIds={labelIds} onHover={setHoverId}
+                fitKey={`${layout}:${clusterView ? "clusters" : "units"}:${drawn.nodes.length}`} />
             )}
-            <div className="legend">
-              {edgeLegend().map(([name, color]) => (
-                <span key={name}><i className="swatch" style={{ background: color }} />{name}</span>
-              ))}
-              <span>dashed = unproved · thickness = count</span>
-            </div>
+            <button className="legend-toggle" onClick={() => setLegendOpen((v) => !v)}>{legendOpen ? "Hide legend" : "Legend"}</button>
+            {legendOpen && (
+              <div className="legend">
+                {edgeLegend().map(([name, color]) => (
+                  <span key={name}><i className="swatch" style={{ background: color }} />{name}</span>
+                ))}
+                <span>dashed when fewer than half the member edges are proved</span>
+              </div>
+            )}
             <div className="roadmap">
               <div className="row">
                 <button className="btn" onClick={() => setPlaying((p) => !p)}>{playing ? "Pause" : "Play roadmap"}</button>
@@ -315,6 +418,25 @@ export function App() {
               <div className="meta" style={{ marginTop: 4 }}>
                 {step ? step.title : "Detected graph"} · {model.plan.curve[stepIndex]?.legacy_dependencies ?? "—"} legacy dependencies remaining. Counts, not time.
               </div>
+              <div className="step-strip">
+                {model.plan.steps.map((s) => (
+                  <button key={s.id} className={stepIndex === s.index ? "chip on" : "chip"} onClick={() => { setPlaying(false); setStepIndex(s.index); setInspectTab("inspect") }}>
+                    {s.index} −{s.remove_ids.length} +{s.add_edges.length}
+                    <span className="meta"> {s.legacy_remaining}</span>
+                  </button>
+                ))}
+              </div>
+              {step && (
+                <div className="row" style={{ marginTop: 6 }}>
+                  <button className={graphMode === "before" ? "chip on" : "chip"} onClick={() => setGraphMode("before")}>Before</button>
+                  <button className={graphMode === "after" ? "chip on" : "chip"} onClick={() => setGraphMode("after")}>After</button>
+                  <button className={graphMode === "changes" ? "chip on" : "chip"} onClick={() => setGraphMode("changes")}>Changes only</button>
+                  <span className="ebadge" style={{ position: "static" }}>−{step.remove_ids.length} connections</span>
+                  <button className="btn" onClick={() => moveStep(step, -1)}>Up</button>
+                  <button className="btn" onClick={() => moveStep(step, 1)}>Down</button>
+                </div>
+              )}
+              {orderNote && <p className="warn">{orderNote}</p>}
               <div className="curve">
                 {model.plan.curve.map((pt) => (
                   <i key={pt.step} className={pt.step === stepIndex ? "on" : ""}
@@ -324,30 +446,45 @@ export function App() {
               </div>
             </div>
           </section>
-          <section className="pane">
-            <div className="pane-h"><h2>Explain / ask</h2><span className="tag pred">Predicted ≠ Measured</span></div>
+          <section className="pane inspector">
+            <div className="pane-h">
+              <div className="tabs">
+                {(["inspect", "ask", "plan"] as const).map((name) => (
+                  <button key={name} className={inspectTab === name ? "on" : ""} onClick={() => setInspectTab(name)}>
+                    {name === "inspect" ? "Inspect" : name === "ask" ? "Ask" : "Plan"}
+                  </button>
+                ))}
+              </div>
+            </div>
             <div className="scroll explain">
-              {step && (
-                <StepCard step={step} onFile={openFile} />
+              {inspectTab === "inspect" && (
+                <>
+                  {step && <StepCard step={step} model={model} onFile={openFile} onJump={(id) => {
+                    const hit = model.plan.steps.find((s) => s.id === id)
+                    if (hit) setStepIndex(hit.index)
+                  }} />}
+                  {node && (
+                    <NodeCard
+                      model={model}
+                      node={node}
+                      edges={view.edges}
+                      onFile={openFile}
+                      onSimulate={() => onSimulate(node.id)}
+                    />
+                  )}
+                  {card && (
+                    <div className="card">
+                      <div className="k">Ripple result · {card.claim}</div>
+                      <p>{card.affected} affected units. Risk {card.risk_before} → {card.risk_after}.</p>
+                      <p className="meta">{Object.entries(card.by_kind).map(([k, n]) => `${n} ${k}`).join(" · ")}</p>
+                      <p className="meta">{Object.entries(card.by_type).map(([k, n]) => `${n} ${k}`).join(" · ")}</p>
+                      <p className="meta">{card.note}</p>
+                    </div>
+                  )}
+                  {!step && !node && !card && <p className="meta">Select a node or a step. One card stays in this tab.</p>}
+                </>
               )}
-              {node && (
-                <NodeCard
-                  model={model}
-                  node={node}
-                  edges={view.edges}
-                  onFile={openFile}
-                  onSimulate={() => onSimulate(node.id)}
-                />
-              )}
-              {card && (
-                <div className="card">
-                  <div className="k">Ripple result · {card.claim}</div>
-                  <p>{card.affected} affected units. Risk {card.risk_before} → {card.risk_after}.</p>
-                  <p className="meta">{Object.entries(card.by_kind).map(([k, n]) => `${n} ${k}`).join(" · ")}</p>
-                  <p className="meta">{Object.entries(card.by_type).map(([k, n]) => `${n} ${k}`).join(" · ")}</p>
-                  <p className="meta">{card.note}</p>
-                </div>
-              )}
+              {inspectTab === "ask" && (
               <div className="card chat">
                 <div className="k">Ask the graph</div>
                 <div className="chips">
@@ -376,31 +513,13 @@ export function App() {
                   </>
                 )}
               </div>
-              <div className="card">
-                <div className="k">Dependency filter</div>
-                <div className="filters">
-                  {EDGE_TYPES.map((t) => (
-                    <label key={t}>
-                      <input type="checkbox" checked={types.includes(t)} onChange={() => {
-                        setTypes((cur) => cur.includes(t) ? cur.filter((x) => x !== t) : [...cur, t])
-                      }} />{t}
-                    </label>
-                  ))}
-                </div>
-                <label className="meta">Hop depth {depth}</label>
-                <input type="range" min={1} max={4} value={depth} onChange={(e) => setDepth(Number(e.target.value))} />
-                <div className="filters">
-                  {(["both", "down", "up"] as const).map((d) => (
-                    <button key={d} className={direction === d ? "chip on" : "chip"} onClick={() => setDirection(d)}>
-                      {d === "down" ? "Downstream" : d === "up" ? "Upstream" : "Both"}
-                    </button>
-                  ))}
-                  <label><input type="checkbox" checked={hideHubs} onChange={() => setHideHubs((v) => !v)} /> hide hubs</label>
-                </div>
-                <p className="meta">{model.nodes.filter((n) => n.hub).length} hubs. Toggle hides them. Colored edges, not positions, are the dependencies.</p>
-              </div>
-              <Drivers model={model} onSaved={(m) => setModel({ ...model, drivers: m.drivers })} />
-              <Brief model={model} onApplied={(next) => setModel({ ...model, ...next, plan: next.plan, rules: next.rules, plan_version: next.version, brief: { ...model.brief, asked: true, target: next.plan?.reason || model.brief.target } })} />
+              )}
+              {inspectTab === "plan" && (
+                <>
+                  <Drivers model={model} onSaved={(m) => setModel({ ...model, drivers: m.drivers })} />
+                  <Brief model={model} onApplied={(next) => setModel({ ...model, ...next, plan: next.plan, rules: next.rules, plan_version: next.version, brief: { ...model.brief, asked: true, target: next.plan?.reason || model.brief.target } })} />
+                </>
+              )}
             </div>
           </section>
         </div>
@@ -541,43 +660,90 @@ function NodeCard({ model, node, edges, onFile, onSimulate }: {
   onFile: (p: string, line: number) => void
   onSimulate: () => void
 }) {
-  const outgoing = edges.filter((e) => e.source === node.id).slice(0, 8)
-  const incoming = edges.filter((e) => e.target === node.id).slice(0, 8)
-  const findings = model.findings.filter((f) => f.node_id === node.id && f.verdict !== "rejected").slice(0, 4)
+  const [showAll, setShowAll] = useState(false)
+  const outgoingAll = edges.filter((e) => e.source === node.id)
+  const incomingAll = edges.filter((e) => e.target === node.id)
+  const outgoing = showAll ? outgoingAll : outgoingAll.slice(0, 5)
+  const incoming = showAll ? incomingAll : incomingAll.slice(0, 5)
+  const findings = model.findings.filter((f) => f.node_id === node.id && f.verdict !== "rejected").slice(0, 3)
   const nameOf = (id: string) => model.nodes.find((n) => n.id === id)?.name || id
   return (
     <div className="card">
       <div className="k">{node.kind} · {node.cluster}{node.hub ? " · hub" : ""}{node.entry ? " · entry" : ""}</div>
       <strong>{node.name}</strong>
       <p>{node.summary}</p>
-      <p className="meta">Depends on {outgoing.length === 8 ? "8+" : outgoing.length} shown. {incoming.length === 8 ? "8+" : incoming.length} shown depend on it.</p>
+      <p className="meta">Degree {node.degree}. Risk {node.risk}. Proved ratio {node.provedRatio ?? "—"}.</p>
+      <p className="meta">Depends on {outgoingAll.length}. {incomingAll.length} depend on it.</p>
       {outgoing.map((e) => (
         <button key={e.id} className="cite" onClick={() => onFile(e.file, e.line)}>
           {e.type}{e.proved ? "" : " (unproved)"} → {nameOf(e.target)} · {e.file}:{e.line}
         </button>
       ))}
-      {findings.map((f) => (
-        <p key={f.id}><span className={f.claim === "Measured" ? "tag meas" : f.claim === "Candidate" ? "tag cand" : "tag pred"}>{f.claim}</span> {f.title}</p>
+      {incoming.slice(0, showAll ? incoming.length : 5).map((e) => (
+        <button key={e.id} className="cite" onClick={() => onFile(e.file, e.line)}>
+          {nameOf(e.source)} {e.type} → this · {e.file}:{e.line}
+        </button>
       ))}
+      {(outgoingAll.length > 5 || incomingAll.length > 5) && (
+        <button className="chip" onClick={() => setShowAll((v) => !v)}>{showAll ? "Show top 5" : "Show all"}</button>
+      )}
+      {findings[0] && <p><span className="tag pred">{findings[0].claim}</span> {findings[0].title}</p>}
       <button className="btn" onClick={onSimulate}>Simulate replacing this</button>
+      {node.file && <button className="btn" onClick={() => onFile(node.file, node.line)}>Open in code</button>}
     </div>
   )
 }
 
-function StepCard({ step, onFile }: { step: Step; onFile: (p: string, line: number) => void }) {
+function StepCard({ step, model, onFile, onJump }: { step: Step; model: RunModel; onFile: (p: string, line: number) => void; onJump: (id: string) => void }) {
+  const nameOf = (id: string) => model.nodes.find((n) => n.id === id)?.name || id
+  const types = Array.from(new Set([...Object.keys(step.deps_before || {}), ...Object.keys(step.deps_after || {})]))
+  const grouped = new Map<string, typeof step.removals>()
+  for (const r of step.removals) {
+    const list = grouped.get(r.type) || []
+    list.push(r)
+    grouped.set(r.type, list)
+  }
   return (
     <div className="card">
-      <div className="k">Step {step.index} · {step.verb} · {step.claim}</div>
+      <div className="k">Connection changes · step {step.index} · {step.verb} · {step.claim}</div>
       <strong>{step.title}</strong>
       <p>{step.detail}</p>
-      <p>Risk {step.risk_before} → {step.risk_after}. Legacy dependencies {step.legacy_remaining}.</p>
-      {step.removals.slice(0, 5).map((r) => (
-        <button key={r.id} className="cite" onClick={() => onFile(r.file, r.line)}>
-          removes {r.type} {r.file}:{r.line} — {r.reason}
-        </button>
+      {(() => {
+        const rationale = model.agents.find((a) => a.id === `rationale-${step.id}` && a.output)
+        return rationale ? <p className="meta">{rationale.output}</p> : null
+      })()}
+      {types.map((t) => {
+        const before = step.deps_before?.[t] || 0
+        const after = step.deps_after?.[t] || 0
+        const max = Math.max(before, after, 1)
+        return (
+          <div key={t} className="meta">
+            {t} {before} → {after} ({after - before >= 0 ? "+" : ""}{after - before})
+            <div className="bars">
+              <i style={{ width: `${(before / max) * 100}%` }} />
+              <i className="after" style={{ width: `${(after / max) * 100}%` }} />
+            </div>
+          </div>
+        )
+      })}
+      {[...grouped.entries()].map(([type, rows]) => (
+        <div key={type}>
+          <div className="k">{type} removed</div>
+          {rows.slice(0, 6).map((r) => (
+            <button key={r.id} className="cite" onClick={() => onFile(r.file, r.line)}>
+              {nameOf(r.source)} → {nameOf(r.target)} · {r.mechanism} · {r.file}:{r.line} — {r.reason}
+            </button>
+          ))}
+        </div>
       ))}
-      {step.requires.slice(0, 4).map((r) => <p key={r.step_id} className="meta">Requires {r.step_id}: {r.because}</p>)}
-      {step.unblocks.length > 0 && <p className="meta">Unblocks {step.unblocks.join(", ")}</p>}
+      {step.add_edges.slice(0, 6).map((e) => (
+        <p key={e.id} className="meta">temporary bridge {nameOf(e.source)} → {nameOf(e.target)} · {e.type}</p>
+      ))}
+      <div className="chips">
+        {step.requires.map((r) => <button key={r.step_id} className="chip" onClick={() => onJump(r.step_id)}>{r.step_id}</button>)}
+        {step.unblocks.map((id) => <button key={id} className="chip" onClick={() => onJump(id)}>{id}</button>)}
+      </div>
+      <p>Risk {step.risk_before} → {step.risk_after}. Legacy dependencies {step.legacy_remaining}.</p>
       <a className="btn" href={workOrderUrl(step.id)} style={{ display: "inline-block", textDecoration: "none" }}>Work order</a>
     </div>
   )
@@ -665,23 +831,14 @@ function Agents({ model, verdict, setVerdict, violations, benchNote, onRejectDem
     <div className="agents">
       <div>
         <h2>Swarm</h2>
-        <p className="meta">Times are shares of the measured {model.elapsed_seconds}s build. Tokens are zero because this run used parsers, not a model, for facts.</p>
-        <div className="dag">
-          {model.agents.map((a) => (
-            <div key={a.id} className="agent">
-              <strong>{a.role}</strong>
-              <div className="meta">{a.status} · {a.seconds}s · {a.tokens} tokens</div>
-              <div className="meta">{a.model} @ {a.host}</div>
-              <div>{a.note}</div>
-            </div>
-          ))}
-        </div>
+        <SwarmStrip model={model} />
       </div>
       <div className="card">
         <div className="k">Plan versions</div>
         {model.plan_versions.map((v) => <p key={v.version}><strong>v{v.version}.</strong> {v.reason}</p>)}
-        <button className="btn" onClick={onRejectDemo}>Reject an invalid reordering</button>
+        <p className="meta">Reorder a step with Up or Down on the Explore strip. An illegal order stays rejected here.</p>
         {violations.map((v) => <p key={v} className="warn">{v}</p>)}
+        <button className="btn" onClick={onRejectDemo}>Show the known illegal order</button>
         {model.validator.legal_order_violations.length === 0 && <p className="meta">The shipped order has {model.validator.legal_order_violations.length} validator violations.</p>}
       </div>
       <div>
@@ -720,8 +877,8 @@ function Agents({ model, verdict, setVerdict, violations, benchNote, onRejectDem
           <div className="diff">{model.measured.diff}</div>
         </div>
       )}
-      <div className="card">
-        <div className="k">Parser benchmark</div>
+      <details className="card">
+        <summary className="k">Parser benchmark</summary>
         <p className="meta">{model.benchmark.note}</p>
         <table>
           <thead><tr><th>Backend</th><th>Mode</th><th>Concurrency</th><th>Seconds</th><th>Calls/s</th></tr></thead>
@@ -748,14 +905,59 @@ function Agents({ model, verdict, setVerdict, violations, benchNote, onRejectDem
             </tbody>
           </table>
         )}
-      </div>
-      <div className="card">
-        <div className="k">Models</div>
+      </details>
+      <details className="card">
+        <summary className="k">Models and limits</summary>
         {model.models.map((m) => <p key={m.role}><strong>{m.role}.</strong> {m.model} — {m.host}</p>)}
         <div className="k">Limits</div>
         {model.limits.map((l) => <p key={l} className="meta">{l}</p>)}
         <a className="btn" href="/api/roadmap.pdf">Export PDF</a>
-      </div>
+      </details>
     </div>
+  )
+}
+
+function SwarmStrip({ model }: { model: RunModel }) {
+  const [open, setOpen] = useState<string | null>(null)
+  const agents = model.agents
+  const calls = agents.filter((a) => a.host && a.host !== "local" && a.status !== "not configured")
+  const tokens = agents.reduce((s, a) => s + (a.tokens || 0), 0)
+  const sum = agents.reduce((s, a) => s + (a.seconds || 0), 0)
+  const span = Math.max(model.elapsed_seconds, ...agents.map((a) => (a.started || 0) + (a.seconds || 0)), 0.001)
+  const selected = agents.find((a) => a.id === open) || null
+  const groups = ["deterministic", "nemotron"]
+  return (
+    <>
+      <p className="meta">
+        {agents.filter((a) => (a.group || "deterministic") === "deterministic").length} stages · {calls.length} Nemotron calls · {tokens} tokens · wall {model.elapsed_seconds}s · sum of recorded durations {sum.toFixed(3)}s
+        {sum > 0 ? ` · sum/wall ${(sum / Math.max(model.elapsed_seconds, 0.001)).toFixed(2)}` : ""}
+      </p>
+      {groups.map((group) => (
+        <div key={group} className="gantt">
+          <div className="k">{group === "deterministic" ? "Deterministic stages" : "Nemotron agents"}</div>
+          {agents.filter((a) => (a.group || "deterministic") === group).map((a) => (
+            <button key={a.id} className="row" onClick={() => setOpen(a.id)}>
+              <span>{a.role}</span>
+              <span className="bar" style={{
+                marginLeft: `${((a.started || 0) / span) * 100}%`,
+                width: `${Math.max(1, ((a.seconds || 0) / span) * 100)}%`,
+                background: group === "nemotron" ? "#c4b5fd" : "#e1a54a",
+              }} />
+            </button>
+          ))}
+          {group === "nemotron" && agents.every((a) => (a.group || "deterministic") !== "nemotron") && (
+            <p className="meta">No Nemotron task has been logged for this run.</p>
+          )}
+        </div>
+      ))}
+      {selected && (
+        <div className="card">
+          <div className="k">{selected.role} · {selected.status}</div>
+          <p className="meta">{selected.model || "—"} @ {selected.host || "—"} · {selected.seconds}s · {selected.tokens} tokens</p>
+          <p className="meta">{selected.input_ref || "No evidence ref"}</p>
+          <p>{selected.output || selected.note || "No output."}</p>
+        </div>
+      )}
+    </>
   )
 }

@@ -5,23 +5,33 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import time
+import uuid
+import zipfile
+from io import BytesIO
 from pathlib import Path
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 from .engine import apply_brief, apply_order, ask, build_run, simulate_node, work_order
+from .swarm import run_tasks
 
 ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(ROOT / ".env")
 CARDDEMO = Path(os.environ.get("CARDDEMO_ROOT", ROOT / "aws-mainframe-modernization-carddemo-main"))
 if not CARDDEMO.is_absolute():
     CARDDEMO = (ROOT / CARDDEMO).resolve()
+ACTIVE = {"root": Path(os.environ.get("SOURCE_ROOT", ROOT / "jforum3-master"))}
+if not ACTIVE["root"].is_absolute():
+    ACTIVE["root"] = (ROOT / ACTIVE["root"]).resolve()
+WORKSPACES = ROOT / "backend" / ".workspaces"
+KEEP_SUFFIXES = {".cbl", ".cpy", ".jcl", ".bms", ".csd", ".md", ".java"}
 
 app = FastAPI(title="Modernization Swarm")
 app.add_middleware(
@@ -56,7 +66,7 @@ class WeightsBody(BaseModel):
 
 
 def _events_from(model: dict) -> list[dict]:
-    events = [{"type": "status", "status": "running", "message": "Swarm started on CardDemo"}]
+    events = [{"type": "status", "status": "running", "message": f"Swarm started on {model.get('repo', 'repository')}"}]
     for agent in model["agents"]:
         events.append({"type": "agent", "phase": "start", **agent})
         events.append({"type": "agent", "phase": "done", **agent})
@@ -74,9 +84,26 @@ def _rebuild() -> None:
     STATE["status"] = "running"
     STATE["error"] = ""
     try:
-        model = build_run(CARDDEMO, with_benchmark=True)
+        model = build_run(ACTIVE["root"], with_benchmark=True)
         STATE["model"] = model
         STATE["events"] = _events_from(model)
+
+        def on_row(row: dict) -> None:
+            current = STATE.get("model")
+            if not current:
+                return
+            agents = current["agents"]
+            for i, existing in enumerate(agents):
+                if existing["id"] == row["id"]:
+                    agents[i] = row
+                    break
+            else:
+                agents.append(row)
+            STATE["events"].append({"type": "agent", "phase": "done", **{k: v for k, v in row.items() if k != "output"}, "output": row.get("output", "")})
+
+        rows = asyncio.run(run_tasks(model, on_row))
+        model["agents"] = [a for a in model["agents"] if a.get("group") != "nemotron"] + rows
+        STATE["model"] = model
         STATE["status"] = "done"
     except Exception as exc:  # noqa: BLE001 — surface the message to the UI
         STATE["status"] = "error"
@@ -95,6 +122,8 @@ def health():
         "status": STATE["status"],
         "carddemo": str(CARDDEMO),
         "carddemo_exists": CARDDEMO.exists(),
+        "root": str(ACTIVE["root"]),
+        "repo": ACTIVE["root"].name,
         "nvidia_configured": bool(os.environ.get("NVIDIA_API_KEY") or os.environ.get("NEMOTRON_API_KEY")),
         "vultr_configured": bool(os.environ.get("VULTR_BASE_URL") and os.environ.get("VULTR_API_KEY")),
     }
@@ -107,6 +136,64 @@ def get_run():
     if STATE["model"] is None:
         return {"status": STATE["status"]}
     return {"status": STATE["status"], **STATE["model"]}
+
+
+@app.post("/api/upload")
+async def upload(request: Request):
+    raw = await request.body()
+    if len(raw) > 200 * 1024 * 1024:
+        raise HTTPException(413, "zip exceeds 200 MB")
+    try:
+        zf = zipfile.ZipFile(BytesIO(raw))
+    except zipfile.BadZipFile as exc:
+        raise HTTPException(400, "not a zip") from exc
+    wid = uuid.uuid4().hex[:12]
+    dest = WORKSPACES / wid
+    dest.mkdir(parents=True, exist_ok=True)
+    kept = 0
+    total = 0
+    for info in zf.infolist():
+        if info.is_dir():
+            continue
+        name = info.filename.replace("\\", "/")
+        parts = Path(name).parts
+        if not name or name.startswith("/") or ".." in parts:
+            shutil.rmtree(dest, ignore_errors=True)
+            raise HTTPException(400, "zip path rejected")
+        mode = (info.external_attr >> 16) & 0o170000
+        if mode == 0o120000:
+            continue
+        suffix = Path(name).suffix.lower()
+        if suffix not in KEEP_SUFFIXES and Path(name).name not in {"LICENSE", "license.txt"}:
+            continue
+        if kept >= 8000:
+            break
+        data = zf.read(info)
+        if total + len(data) > 200 * 1024 * 1024:
+            break
+        total += len(data)
+        target = dest / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+        kept += 1
+    if kept == 0:
+        shutil.rmtree(dest, ignore_errors=True)
+        raise HTTPException(400, "This analyzer reads COBOL, JCL, BMS and copybooks")
+    for child in WORKSPACES.iterdir() if WORKSPACES.exists() else []:
+        if child.resolve() != dest.resolve():
+            shutil.rmtree(child, ignore_errors=True)
+    ACTIVE["root"] = dest
+    asyncio.get_event_loop().run_in_executor(None, _rebuild)
+    return {"message": f"Rebuilding. Kept {kept} source files.", "files": kept}
+
+
+@app.post("/api/reset")
+async def reset():
+    ACTIVE["root"] = CARDDEMO
+    if WORKSPACES.exists():
+        shutil.rmtree(WORKSPACES, ignore_errors=True)
+    asyncio.get_event_loop().run_in_executor(None, _rebuild)
+    return {"message": "Reset to CardDemo. Rebuilding."}
 
 
 @app.post("/api/analyze")
@@ -136,9 +223,10 @@ async def events():
 
 @app.get("/api/file")
 def file(path: str):
-    target = (CARDDEMO / path).resolve()
-    if not str(target).startswith(str(CARDDEMO.resolve())) or not target.is_file():
-        raise HTTPException(404, "file not in the CardDemo tree")
+    root = ACTIVE["root"].resolve()
+    target = (root / path).resolve()
+    if not str(target).startswith(str(root)) or not target.is_file():
+        raise HTTPException(404, "file not in the active tree")
     text = target.read_text(encoding="utf-8", errors="replace")
     return {"path": path, "text": text}
 
