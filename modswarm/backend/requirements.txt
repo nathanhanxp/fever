@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+sqlmodel
+pydantic
+python-dotenv
+httpx
+python-multipart
+tree-sitter>=0.24,<1.0
+tree-sitter-typescript>=0.23,<1.0
+numpy
+umap-learn
+scikit-learn
+hdbscan

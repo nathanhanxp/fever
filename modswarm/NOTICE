@@ -1,0 +1,9 @@
+Modernization Swarm is an adaptation of GraphDev.
+
+GraphDev
+Copyright (c) 2026-present GitLab Inc.
+Author: Zelong Wang
+License: MIT (see LICENSE)
+
+This project keeps that license and changes the product from a TypeScript
+code graph into a legacy-migration graph. The list of changes is in README.md.

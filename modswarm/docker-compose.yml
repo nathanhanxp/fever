@@ -1,0 +1,10 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8090:8090"
+    env_file:
+      - ../.env
+    environment:
+      NVIDIA_BASE_URL: https://integrate.api.nvidia.com/v1
+      VULTR_BASE_URL: https://api.vultrinference.com/v1

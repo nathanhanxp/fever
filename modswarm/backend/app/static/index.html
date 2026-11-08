@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>Modernization Swarm</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; font: 14px/1.4 ui-sans-serif, system-ui; background: #0e1116; color: #e7ecf3; }
+  header { display: flex; gap: 12px; align-items: center; padding: 10px 14px; border-bottom: 1px solid #243044; }
+  header b { font-size: 16px; }
+  #repo { color: #9fb0c9; }
+  main { display: grid; grid-template-columns: 280px 1fr 320px; height: calc(100vh - 48px); }
+  aside, #right { overflow: auto; padding: 12px; border-right: 1px solid #243044; }
+  #right { border-right: 0; border-left: 1px solid #243044; }
+  button, input, select { background: #182232; color: inherit; border: 1px solid #31445f; border-radius: 6px; padding: 6px 8px; }
+  button { cursor: pointer; }
+  table { border-collapse: collapse; width: 100%; font-size: 12px; }
+  td, th { border: 1px solid #243044; padding: 4px; text-align: center; }
+  td.green { background: #1d4d32; } td.amber { background: #6a4b12; } td.red { background: #6d2430; }
+  svg { width: 100%; height: 520px; background: #10151d; }
+  .legend { font-size: 12px; color: #9fb0c9; }
+  .card { background: #141b27; padding: 10px; border-radius: 8px; }
+  pre { white-space: pre-wrap; font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <b>Modernization Swarm</b>
+  <span id="repo">No repository loaded</span>
+  <span id="license"></span>
+</header>
+<main>
+  <aside>
+    <p>Upload a zip of COBOL, copybooks, JCL, and BMS, or open the CardDemo preset.</p>
+    <input id="file" type="file" accept=".zip"/>
+    <p><button id="upload">Upload</button> <button id="card">CardDemo</button></p>
+    <label>Target stack</label>
+    <input id="stack" value="Java 21 + Spring Boot, PostgreSQL, REST, containers, workflow scheduler" style="width:100%"/>
+    <p><button id="run">Fill matrix</button></p>
+    <label>Lens</label>
+    <select id="lens">
+      <option>All</option><option>API</option><option>Data</option><option>Code</option>
+      <option>Platform</option><option>Batch</option><option>Integration</option>
+      <option>Security</option><option>Compliance</option>
+    </select>
+    <p class="legend">Dashed lines are migration edges. Legacy edges stay solid. Target nodes sit on the right.</p>
+    <div id="tree"></div>
+  </aside>
+  <section>
+    <p id="summary">Matrix cells fill as each lens task returns. Counts are accepted edges. Empty means no evidenced proposal.</p>
+    <div id="matrix"></div>
+    <svg id="graph"></svg>
+    <div id="waves"></div>
+  </section>
+  <aside id="right">
+    <div class="card" id="cardbox"><b>Inspect</b><p>Select a matrix cell, edge, or wave.</p></div>
+  </aside>
+</main>
+<script>
+let runId = null;
+let graph = null;
+const $ = (id) => document.getElementById(id);
+
+async function load(url, opts) {
+  const res = await fetch(url, opts);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+function paintMatrix(data) {
+  const lenses = data.lenses;
+  const by = {};
+  for (const t of data.tasks || []) by[t.cluster + "|" + t.lens] = t;
+  let html = "<table><tr><th></th>" + lenses.map(l => `<th>${l}</th>`).join("") + "</tr>";
+  for (const c of data.clusters) {
+    html += `<tr><th>${c}</th>`;
+    for (const l of lenses) {
+      const t = by[c + "|" + l] || {count: "", severity: "empty"};
+      const tip = [t.model, t.latency_s != null ? t.latency_s + "s" : "", t.prompt_tokens != null ? t.prompt_tokens + " tokens" : ""].filter(Boolean).join(" · ");
+      html += `<td class="${t.severity || "empty"}" title="${tip}" data-c="${c}" data-l="${l}">${t.count ?? ""}</td>`;
+    }
+    html += "</tr>";
+  }
+  html += "</table>";
+  $("matrix").innerHTML = html;
+  $("summary").textContent = data.summary || $("summary").textContent;
+}
+
+function paintGraph() {
+  if (!graph) return;
+  const svg = $("graph");
+  const lens = $("lens").value;
+  const edges = graph.migration_edges.filter(e => lens === "All" || e.lens === lens);
+  const nodes = graph.nodes.slice(0, 80);
+  const w = 900, h = 520;
+  const pos = {};
+  nodes.forEach((n, i) => { pos[n.id] = [40 + (i % 10) * 70, 40 + Math.floor(i / 10) * 56]; });
+  graph.target_nodes.forEach((n, i) => { pos[n.id] = [w - 140, 40 + i * 36]; });
+  let body = "";
+  for (const e of graph.legacy_edges.slice(0, 120)) {
+    const a = pos[e.source], b = pos[e.target];
+    if (!a || !b) continue;
+    body += `<line x1="${a[0]}" y1="${a[1]}" x2="${b[0]}" y2="${b[1]}" stroke="#3d4d66" />`;
+  }
+  const colors = {API:"#7aa2ff", Data:"#3ddc97", Code:"#f0c14a", Platform:"#d27bff", Batch:"#ff8b6a", Integration:"#5ad1e6", Security:"#ff6b8a", Compliance:"#c8d48a"};
+  edges.forEach((e, i) => {
+    const a = pos[e.legacy] || [80, 40 + (i % 12) * 30];
+    const b = pos[e.target] || [w - 140, 40 + i * 20];
+    body += `<line data-id="${e.id}" x1="${a[0]}" y1="${a[1]}" x2="${b[0]}" y2="${b[1]}" stroke="${colors[e.lens] || "#fff"}" stroke-dasharray="5 4" stroke-width="2"><title>${e.lens}: ${e.legacy} -> ${e.target_name}\n${e.risk}\n${e.action}</title></line>`;
+  });
+  for (const n of nodes) {
+    const p = pos[n.id];
+    body += `<circle cx="${p[0]}" cy="${p[1]}" r="4" fill="#9fb0c9"><title>${n.name}</title></circle>`;
+  }
+  for (const n of graph.target_nodes) {
+    const p = pos[n.id];
+    if (!p) continue;
+    body += `<rect x="${p[0]}" y="${p[1]-8}" width="110" height="16" fill="#1d4d32"/><text x="${p[0]+4}" y="${p[1]+4}" fill="#e7ecf3" font-size="10">${n.name.slice(0,16)}</text>`;
+  }
+  svg.innerHTML = body;
+  svg.querySelectorAll("line[data-id]").forEach(line => {
+    line.onclick = async () => {
+      const e = graph.migration_edges.find(x => x.id === line.dataset.id);
+      const ev = (e.evidence || [])[0];
+      let code = "";
+      if (ev) code = (await load(`/api/runs/${runId}/file?file=${encodeURIComponent(ev.file)}&line=${ev.line}`)).text;
+      $("cardbox").innerHTML = `<b>${e.lens}</b> Predicted<p>${e.legacy} → ${e.target_name}</p><p>Risk: ${e.risk}</p><p>Action: ${e.action}</p><pre>${code}</pre>`;
+    };
+  });
+}
+
+async function refreshGraph() {
+  graph = await load(`/api/runs/${runId}/graph?lens=All`);
+  paintGraph();
+  const w = await load(`/api/runs/${runId}/waves`);
+  $("waves").innerHTML = "<p>Waves</p>" + w.steps.map(s => `<button data-w="${s.id}">${s.id} ${s.title}</button>`).join(" ")
+    + `<p>Illegal sample order reason: ${JSON.stringify(w.illegal_reason).slice(0, 280)}</p>`;
+  $("waves").querySelectorAll("button").forEach(btn => btn.onclick = async () => {
+    const impact = await load(`/api/runs/${runId}/waves/${btn.dataset.w}/impact`);
+    const order = await load(`/api/runs/${runId}/waves/${btn.dataset.w}/work-order`);
+    $("cardbox").innerHTML = `<b>Wave ${btn.dataset.w}</b><p>Changed ${impact.changed.length}, ripple ${impact.ripple.length}. Overlay is Predicted.</p><pre>${order.prompt.slice(0, 1200)}</pre>`;
+  });
+}
+
+async function openRun(data) {
+  runId = data.id;
+  $("repo").textContent = data.repo;
+  $("license").textContent = data.license;
+  const full = await load(`/api/runs/${runId}`);
+  paintMatrix(full);
+  await refreshGraph();
+}
+
+$("upload").onclick = async () => {
+  const fd = new FormData();
+  fd.append("file", $("file").files[0]);
+  openRun(await load("/api/upload", {method: "POST", body: fd}));
+};
+$("card").onclick = async () => openRun(await load("/api/preset/carddemo", {method: "POST"}));
+$("lens").onchange = paintGraph;
+$("run").onclick = () => {
+  const es = new EventSource(`/api/runs/${runId}/matrix/stream?max_tasks=8`);
+  es.onmessage = async (ev) => {
+    const data = JSON.parse(ev.data);
+    if (data.type === "summary") { $("summary").textContent = data.text; es.close(); await refreshGraph(); return; }
+    const full = await load(`/api/runs/${runId}`);
+    paintMatrix(full);
+  };
+};
+$("matrix").onclick = async (ev) => {
+  const td = ev.target.closest("td");
+  if (!td || !td.dataset.c) return;
+  $("lens").value = td.dataset.l;
+  await refreshGraph();
+  $("cardbox").innerHTML = `<b>${td.dataset.c} · ${td.dataset.l}</b><p>Graph filtered to this lens. Edges are Predicted.</p>`;
+};
+</script>
+</body>
+</html>

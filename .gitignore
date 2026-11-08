@@ -11,5 +11,8 @@ dist/
 frontend/dist/
 backend/.cache/
 backend/.workspaces/
+modswarm/backend/data/
+modswarm/backend/*.db
+modswarm/backend/.venv/
 *.log
 35368827-main/
