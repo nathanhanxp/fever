@@ -1,0 +1,280 @@
+{
+  "backends": [
+    {
+      "name": "nvidia",
+      "base": "https://integrate.api.nvidia.com/v1",
+      "configured": true,
+      "models": [
+        {
+          "model": "nvidia/nemotron-3-nano-30b-a3b",
+          "completion": {
+            "ok": false,
+            "status": 410,
+            "seconds": 0.129,
+            "prompt_tokens": null,
+            "completion_tokens": null,
+            "total_tokens": null,
+            "error": "{\"type\":\"about:blank\",\"title\":\"Gone\",\"status\":410,\"detail\":\"The model 'nvidia/nemotron-3-nano-30b-a3b' has reached its end of life on 2026-09-01T09:00:00Z and is no longer available.\"}\n"
+          },
+          "json_schema": {
+            "ok": false,
+            "status": 410,
+            "seconds": 0.134,
+            "prompt_tokens": null,
+            "completion_tokens": null,
+            "total_tokens": null,
+            "error": "{\"type\":\"about:blank\",\"title\":\"Gone\",\"status\":410,\"detail\":\"The model 'nvidia/nemotron-3-nano-30b-a3b' has reached its end of life on 2026-09-01T09:00:00Z and is no longer available.\"}\n",
+            "strict_schema_error": "{\"type\":\"about:blank\",\"title\":\"Gone\",\"status\":410,\"detail\":\"The model 'nvidia/nemotron-3-nano-30b-a3b' has reached its end of life on 2026-09-01T09:00:00Z and is no longer available.\"}\n"
+          },
+          "tools": {
+            "ok": false,
+            "status": 410,
+            "seconds": 0.14,
+            "prompt_tokens": null,
+            "completion_tokens": null,
+            "total_tokens": null,
+            "error": "{\"type\":\"about:blank\",\"title\":\"Gone\",\"status\":410,\"detail\":\"The model 'nvidia/nemotron-3-nano-30b-a3b' has reached its end of life on 2026-09-01T09:00:00Z and is no longer available.\"}\n"
+          }
+        },
+        {
+          "model": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+          "completion": {
+            "ok": true,
+            "status": 200,
+            "seconds": 0.725,
+            "prompt_tokens": 24,
+            "completion_tokens": 32,
+            "total_tokens": 56,
+            "vector_size": null,
+            "snippet": "{\"id\":\"chatcmpl-0f499a48-fe06-4046-ac74-a50e6e64b4b3\",\"choices\":[{\"index\":0,\"message\":{\"content\":null,\"role\":\"assistant\",\"reasoning_content\":\"The user says: \\\"Reply with the single word pong.\\\" So we must respond with exactly \\\"pong\\\". No extra punctuation? The instruction: \\\"\"},\"finish_reason\":\"length\",\"logprobs\":null}],\"created\":1794127776,\"model\":\"nvidia/nemotron-3-nano-omni-30b-a3b-reasoning\",\"service_tier\":null,\"system_fingerprint\":null,\"object\":\"chat.completion\",\"usage\":{\"prompt_tokens\":24"
+          },
+          "json_schema": {
+            "ok": true,
+            "status": 200,
+            "seconds": 0.441,
+            "prompt_tokens": 30,
+            "completion_tokens": 40,
+            "total_tokens": 70,
+            "vector_size": null,
+            "snippet": "{\"id\":\"chatcmpl-74493a9d-478c-4a9f-9b48-f60cd60f6ad8\",\"choices\":[{\"index\":0,\"message\":{\"content\":\"{\\n  \\\"ok\\\": true,\\n  \\\"note\\\": \\\"probe\\\"\\n}\",\"role\":\"assistant\",\"reasoning_content\":\"We need to respond with JSON {\\\"ok\\\": true, \\\"note\\\": \\\"probe\\\"} exactly. No extra text.\"},\"finish_reason\":\"stop\",\"logprobs\":null}],\"created\":1794127776,\"model\":\"nvidia/nemotron-3-nano-omni-30b-a3b-reasoning\",\"service_tier\":null,\"system_fingerprint\":null,\"object\":\"chat.completion\",\"usage\":{\"prompt_tokens\":30,\"compl"
+          },
+          "tools": {
+            "ok": true,
+            "status": 200,
+            "seconds": 0.967,
+            "prompt_tokens": 273,
+            "completion_tokens": 80,
+            "total_tokens": 353,
+            "vector_size": null,
+            "snippet": "{\"id\":\"chatcmpl-daa26531-9544-46c1-9f5b-ce386e57c609\",\"choices\":[{\"index\":0,\"message\":{\"content\":null,\"role\":\"assistant\",\"reasoning_content\":\"Okay, the user wants me to call the ping tool with the token \\\"probe\\\". Let me check the available tools. The ping function requires a token parameter. The user provided \\\"probe\\\" as the token. So I need to generate a tool call with the name \\\"ping\\\" and the arguments including \\\"token\\\": \\\"probe\\\". I'll make sure the JSON is correctly formatted. No other "
+          }
+        },
+        {
+          "model": "nvidia/nemotron-nano-3-30b-a3b",
+          "completion": {
+            "ok": false,
+            "status": 404,
+            "seconds": 0.205,
+            "prompt_tokens": null,
+            "completion_tokens": null,
+            "total_tokens": null,
+            "error": "{\"status\":404,\"title\":\"Not Found\",\"detail\":\"Function '2b2dcd47-c858-425a-9c04-4cacf2eac993': Not found for account 'JRiJiFqKG_a1fM46LCUB3bBOGjwA1giZPSrta2mX4lc'\"}"
+          },
+          "json_schema": {
+            "ok": false,
+            "status": 404,
+            "seconds": 0.16,
+            "prompt_tokens": null,
+            "completion_tokens": null,
+            "total_tokens": null,
+            "error": "{\"status\":404,\"title\":\"Not Found\",\"detail\":\"Function '2b2dcd47-c858-425a-9c04-4cacf2eac993': Not found for account 'JRiJiFqKG_a1fM46LCUB3bBOGjwA1giZPSrta2mX4lc'\"}",
+            "strict_schema_error": "{\"status\":404,\"title\":\"Not Found\",\"detail\":\"Function '2b2dcd47-c858-425a-9c04-4cacf2eac993': Not found for account 'JRiJiFqKG_a1fM46LCUB3bBOGjwA1giZPSrta2mX4lc'\"}"
+          },
+          "tools": {
+            "ok": false,
+            "status": 404,
+            "seconds": 0.145,
+            "prompt_tokens": null,
+            "completion_tokens": null,
+            "total_tokens": null,
+            "error": "{\"status\":404,\"title\":\"Not Found\",\"detail\":\"Function '2b2dcd47-c858-425a-9c04-4cacf2eac993': Not found for account 'JRiJiFqKG_a1fM46LCUB3bBOGjwA1giZPSrta2mX4lc'\"}"
+          }
+        },
+        {
+          "model": "nvidia/nemotron-3.5-bolt-e4b",
+          "completion": {
+            "ok": true,
+            "status": 200,
+            "seconds": 0.315,
+            "prompt_tokens": 16,
+            "completion_tokens": 2,
+            "total_tokens": 18,
+            "vector_size": null,
+            "snippet": "{\"id\":\"chatcmpl-26067a28-0226-4c91-968e-3e84b3c49bb5\",\"choices\":[{\"index\":0,\"message\":{\"content\":\"pong\",\"role\":\"assistant\",\"reasoning_content\":null},\"finish_reason\":\"stop\",\"logprobs\":null}],\"created\":1794127779,\"model\":\"nvidia/nemotron-3.5-bolt-e4b\",\"service_tier\":null,\"system_fingerprint\":null,\"object\":\"chat.completion\",\"usage\":{\"prompt_tokens\":16,\"completion_tokens\":2,\"total_tokens\":18,\"prompt_tokens_details\":{\"audio_tokens\":null,\"cached_tokens\":0},\"completion_tokens_details\":{\"accepted_predic"
+          },
+          "json_schema": {
+            "ok": true,
+            "status": 200,
+            "seconds": 0.377,
+            "prompt_tokens": 23,
+            "completion_tokens": 12,
+            "total_tokens": 35,
+            "vector_size": null,
+            "snippet": "{\"id\":\"chatcmpl-edd09213-a167-44d8-8e11-d74f19432027\",\"choices\":[{\"index\":0,\"message\":{\"content\":\"{\\\"ok\\\": true, \\\"note\\\": \\\"probe\\\"}\",\"role\":\"assistant\",\"reasoning_content\":null},\"finish_reason\":\"stop\",\"logprobs\":null}],\"created\":1794127779,\"model\":\"nvidia/nemotron-3.5-bolt-e4b\",\"service_tier\":null,\"system_fingerprint\":null,\"object\":\"chat.completion\",\"usage\":{\"prompt_tokens\":23,\"completion_tokens\":12,\"total_tokens\":35,\"prompt_tokens_details\":{\"audio_tokens\":null,\"cached_tokens\":0},\"completion_t"
+          },
+          "tools": {
+            "ok": true,
+            "status": 200,
+            "seconds": 0.39,
+            "prompt_tokens": 63,
+            "completion_tokens": 13,
+            "total_tokens": 76,
+            "vector_size": null,
+            "snippet": "{\"id\":\"chatcmpl-d9dcbb75-dc93-44c8-9b45-1ca6705aad81\",\"choices\":[{\"index\":0,\"message\":{\"content\":null,\"tool_calls\":[{\"id\":\"call-a487cfc0-6301-43c7-aaaa-76fa722d2741\",\"type\":\"function\",\"function\":{\"name\":\"ping\",\"arguments\":\"{\\\"token\\\":\\\"probe\\\"}\"}}],\"role\":\"assistant\",\"reasoning_content\":null},\"finish_reason\":\"tool_calls\",\"logprobs\":null}],\"created\":1794127779,\"model\":\"nvidia/nemotron-3.5-bolt-e4b\",\"service_tier\":null,\"system_fingerprint\":null,\"object\":\"chat.completion\",\"usage\":{\"prompt_tokens\":6"
+          }
+        }
+      ]
+    },
+    {
+      "name": "vultr",
+      "base": "https://api.vultrinference.com/v1",
+      "configured": true,
+      "models": [
+        {
+          "model": "nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-BF16",
+          "completion": {
+            "ok": false,
+            "status": 401,
+            "seconds": 0.118,
+            "prompt_tokens": null,
+            "completion_tokens": null,
+            "total_tokens": null,
+            "error": "{\"error\":{\"code\":401,\"message\":\"Invalid API key\",\"type\":\"auth_error\",\"metadata\":{\"error_type\":\"authentication\"}}}"
+          },
+          "json_schema": {
+            "ok": false,
+            "status": 401,
+            "seconds": 0.124,
+            "prompt_tokens": null,
+            "completion_tokens": null,
+            "total_tokens": null,
+            "error": "{\"error\":{\"code\":401,\"message\":\"Invalid API key\",\"type\":\"auth_error\",\"metadata\":{\"error_type\":\"authentication\"}}}",
+            "strict_schema_error": "{\"error\":{\"code\":401,\"message\":\"Invalid API key\",\"type\":\"auth_error\",\"metadata\":{\"error_type\":\"authentication\"}}}"
+          },
+          "tools": {
+            "ok": false,
+            "status": 401,
+            "seconds": 0.125,
+            "prompt_tokens": null,
+            "completion_tokens": null,
+            "total_tokens": null,
+            "error": "{\"error\":{\"code\":401,\"message\":\"Invalid API key\",\"type\":\"auth_error\",\"metadata\":{\"error_type\":\"authentication\"}}}"
+          }
+        },
+        {
+          "model": "nemotron-3-nano-omni-30b-a3b-reasoning",
+          "completion": {
+            "ok": false,
+            "status": 401,
+            "seconds": 0.118,
+            "prompt_tokens": null,
+            "completion_tokens": null,
+            "total_tokens": null,
+            "error": "{\"error\":{\"code\":401,\"message\":\"Invalid API key\",\"type\":\"auth_error\",\"metadata\":{\"error_type\":\"authentication\"}}}"
+          },
+          "json_schema": {
+            "ok": false,
+            "status": 401,
+            "seconds": 0.122,
+            "prompt_tokens": null,
+            "completion_tokens": null,
+            "total_tokens": null,
+            "error": "{\"error\":{\"code\":401,\"message\":\"Invalid API key\",\"type\":\"auth_error\",\"metadata\":{\"error_type\":\"authentication\"}}}",
+            "strict_schema_error": "{\"error\":{\"code\":401,\"message\":\"Invalid API key\",\"type\":\"auth_error\",\"metadata\":{\"error_type\":\"authentication\"}}}"
+          },
+          "tools": {
+            "ok": false,
+            "status": 401,
+            "seconds": 0.111,
+            "prompt_tokens": null,
+            "completion_tokens": null,
+            "total_tokens": null,
+            "error": "{\"error\":{\"code\":401,\"message\":\"Invalid API key\",\"type\":\"auth_error\",\"metadata\":{\"error_type\":\"authentication\"}}}"
+          }
+        }
+      ]
+    }
+  ],
+  "roles": {
+    "coordinator": [
+      {
+        "backend": "nvidia",
+        "model": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+        "seconds": 0.725
+      }
+    ],
+    "describer": [
+      {
+        "backend": "nvidia",
+        "model": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+        "seconds": 0.441
+      }
+    ],
+    "namer": [
+      {
+        "backend": "nvidia",
+        "model": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+        "seconds": 0.441
+      }
+    ],
+    "lens": [
+      {
+        "backend": "nvidia",
+        "model": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+        "seconds": 0.441
+      }
+    ],
+    "skeptic": [
+      {
+        "backend": "nvidia",
+        "model": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+        "seconds": 0.441
+      }
+    ],
+    "planner": [
+      {
+        "backend": "nvidia",
+        "model": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+        "seconds": 0.441
+      }
+    ],
+    "analyst": [
+      {
+        "backend": "nvidia",
+        "model": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+        "seconds": 0.725
+      }
+    ],
+    "explorer": [
+      {
+        "backend": "nvidia",
+        "model": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+        "seconds": 0.967
+      }
+    ],
+    "embeddings": [
+      {
+        "backend": "nvidia",
+        "model": "nvidia/nemotron-3-embed-1b",
+        "vector_size": 2048,
+        "seconds": 0.25
+      }
+    ]
+  },
+  "embeddings_probe": {
+    "ok": true,
+    "status": 200,
+    "seconds": 0.25,
+    "vector_size": 2048
+  }
+}
